@@ -1,2 +1,8 @@
-<h1>Welcome to SvelteKit</h1>
-<p>Visit <a href="https://svelte.dev/docs/kit">svelte.dev/docs/kit</a> to read the documentation</p>
+<script>
+  // Add any necessary script for the synthesis client
+</script>
+
+<main>
+  <h1>Synthesis Client</h1>
+  <!-- Add the content for the synthesis client here -->
+</main>
