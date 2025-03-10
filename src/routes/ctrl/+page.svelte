@@ -1,8 +1,13 @@
-<script>
-  // Add any necessary script for the control client
+<script lang="ts">
+    import { auth } from '$lib/firebase'
+    import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth'
+    async function signInWithGoogle () {
+        const provider = new GoogleAuthProvider ()
+        const user = await signInWithPopup (auth, provider)
+        console.log(user)
+    }
 </script>
 
-<main class="flex items-center justify-center min-h-screen">
-  <h1 class="text-3xl font-bold underline">Control Client</h1>
-  <!-- Add the content for the control client here -->
-</main>
+<button class="text-3xl font-bold underline" onclick={ signInWithGoogle }>LOG IN</button>
+   <!-- Add the content for the control client here -->
+ 
