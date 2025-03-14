@@ -26,6 +26,6 @@
 
 <canvas id="cnv" style="position:absolute; z-index:-1" ></canvas>
 
-<main class="flex items-center justify-center min-h-screen">
+<main class="flex flex-col items-center justify-center min-h-screen">
     {@render children ()}
 </main>  

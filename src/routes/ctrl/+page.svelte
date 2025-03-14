@@ -1,13 +1,15 @@
 <script lang="ts">
-    import { auth } from '$lib/firebase'
-    import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth'
+  import { auth, user } from '$lib/firebase'
+    import { goto } from '$app/navigation'
+    import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth'
+    import { browser } from '$app/environment'
+
+    $: if (browser && $user) goto (`/ctrl/active`)
+
     async function signInWithGoogle () {
-        const provider = new GoogleAuthProvider ()
-        const user = await signInWithPopup (auth, provider)
-        console.log(user)
+      const provider = new GoogleAuthProvider ()
+      await signInWithPopup (auth, provider)
     }
 </script>
 
-<button class="text-3xl font-bold underline" onclick={ signInWithGoogle }>LOG IN</button>
-   <!-- Add the content for the control client here -->
- 
+<button class="btn btn-primary" onclick={ signInWithGoogle }>Sign in with Google</button>
