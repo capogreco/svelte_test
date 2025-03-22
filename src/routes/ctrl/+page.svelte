@@ -1,15 +1,12 @@
 <script lang="ts">
-  import { auth, user } from '$lib/firebase'
-    import { goto } from '$app/navigation'
-    import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth'
-    import { browser } from '$app/environment'
+   import { user } from '$lib/firebase'
+   import { onMount } from 'svelte'
+   import { goto } from '$app/navigation';
 
-    $: if (browser && $user) goto (`/ctrl/active`)
+   onMount (() => {
+      if ($user) goto (`/ctrl/active`)
+   })
 
-    async function signInWithGoogle () {
-      const provider = new GoogleAuthProvider ()
-      await signInWithPopup (auth, provider)
-    }
 </script>
 
-<button class="btn btn-primary" onclick={ signInWithGoogle }>Sign in with Google</button>
+<h1>HELLO { $user?.displayName?.toUpperCase () }</h1>
