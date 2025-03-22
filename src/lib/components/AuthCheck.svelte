@@ -2,6 +2,8 @@
    import { auth, user }  from '$lib/firebase'
    import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth'
    import { goto } from '$app/navigation'
+   import { page } from '$app/stores'
+   import { browser } from '$app/environment'
 
    async function signInWithGoogle () {
       const provider = new GoogleAuthProvider ()
@@ -14,6 +16,16 @@
       goto (`/ctrl`)
    }
 
+   const isDaisyUIAvailable = () => {
+        const testElement = document.createElement('div')
+        testElement.className = 'btn btn-warning'
+        document.body.appendChild(testElement)
+        const isAvailable = getComputedStyle (testElement).getPropertyValue ('background-color') !== ''
+        document.body.removeChild(testElement)
+        return isAvailable
+    }
+
+    $: if (browser && $page.url.pathname !== `/ctrl` && !isDaisyUIAvailable ()) goto(`/ctrl`);
 </script>
 
 {#if $user}
