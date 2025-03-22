@@ -1,0 +1,1 @@
+import"../chunks/CWj6FrbW.js";import{t,a}from"../chunks/Cob43IS2.js";var s=t('<main class="flex items-center justify-center min-h-screen"><a href="/synthesis/connecting"><h1 class="text-3xl font-bold underline">CONNECTING</h1></a></main>');function m(e,o){var n=s();a(e,n)}export{m as component};
