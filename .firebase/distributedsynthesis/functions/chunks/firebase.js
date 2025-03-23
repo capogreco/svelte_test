@@ -1,7 +1,7 @@
-import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
-import { w as writable } from "./exports.js";
+import { initializeApp } from "firebase/app"
+import { getAuth, onAuthStateChanged } from "firebase/auth"
+import { w as writable } from "./exports.js"
+
 const firebaseConfig = {
   apiKey: "AIzaSyAFw1rGC749T8tCqLiVRrOcaDa2jTSrKRs",
   authDomain: "distributedsynthesis.firebaseapp.com",
@@ -10,10 +10,11 @@ const firebaseConfig = {
   messagingSenderId: "654241099583",
   appId: "1:654241099583:web:e10da6d228d516f9acad8a"
 };
-initializeApp(firebaseConfig);
-getFirestore();
+
+initializeApp (firebaseConfig)
+
 const auth = getAuth();
-function userStore() {
+function userStore () {
   let unsubscribe;
   if (!auth || !globalThis.window) {
     console.warn("Auth is not initialized or not in browser");
