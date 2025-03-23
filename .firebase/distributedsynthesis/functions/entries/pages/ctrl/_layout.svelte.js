@@ -8,7 +8,7 @@ function AuthCheck($$payload, $$props) {
   var $$store_subs;
   if (store_get($$store_subs ??= {}, "$user", user)) {
     $$payload.out += "<!--[-->";
-    $$payload.out += `<button class="absolute top-4 right-4 btn btn-primary">Sign out</button> `;
+    $$payload.out += `<button class="absolute top-4 right-4 btn preset-outlined-surface-500">Sign out</button> `;
     if (store_get($$store_subs ??= {}, "$user", user).uid === `ap13XJUrp7duHAPYfubdKmgRZXd2`) {
       $$payload.out += "<!--[-->";
       $$payload.out += `<!---->`;
@@ -21,7 +21,7 @@ function AuthCheck($$payload, $$props) {
     $$payload.out += `<!--]-->`;
   } else {
     $$payload.out += "<!--[!-->";
-    $$payload.out += `<button class="btn btn-primary">Sign in with Google</button>`;
+    $$payload.out += `<button type="button" class="btn preset-outlined-primary-500">SIGN IN</button>`;
   }
   $$payload.out += `<!--]-->`;
   if ($$store_subs) unsubscribe_stores($$store_subs);

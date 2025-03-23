@@ -1,9 +1,9 @@
 import "clsx";
-function Layout($$payload, $$props) {
+function _layout($$payload, $$props) {
   let { children } = $$props;
   children($$payload);
   $$payload.out += `<!---->`;
 }
 export {
-  Layout as default
+  _layout as default
 };

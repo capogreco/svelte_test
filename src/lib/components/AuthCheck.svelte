@@ -16,21 +16,11 @@
       goto (`/ctrl`)
    }
 
-   const isDaisyUIAvailable = () => {
-        const testElement = document.createElement('div')
-        testElement.className = 'btn btn-warning'
-        document.body.appendChild(testElement)
-        const isAvailable = getComputedStyle (testElement).getPropertyValue ('background-color') !== ''
-        document.body.removeChild(testElement)
-        return isAvailable
-    }
-
-    $: if (browser && $page.url.pathname !== `/ctrl` && !isDaisyUIAvailable ()) goto(`/ctrl`);
 </script>
 
 {#if $user}
    <button 
-      class="absolute top-4 right-4 btn btn-primary" 
+      class="absolute top-4 right-4 btn preset-outlined-surface-500" 
       onclick={ () => handleSignOut () }
    >Sign out</button>
    {#if $user.uid === `ap13XJUrp7duHAPYfubdKmgRZXd2`}
@@ -39,5 +29,7 @@
       <h1 class="text-3xl font-bold underline">USER NOT AUTHORISED</h1>
    {/if}
 {:else}
-   <button class="btn btn-primary" onclick={ signInWithGoogle }>Sign in with Google</button>
+   <button type="button" class="btn preset-outlined-primary-500" onclick={ signInWithGoogle }>
+      SIGN IN
+   </button>
 {/if}
