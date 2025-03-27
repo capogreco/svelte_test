@@ -1,3 +1,4 @@
+<!-- Filename: src/routes/ctrl/active/%2Bpage.svelte -->
 <script lang="ts">
     import { user, db } from '$lib/firebase'
     import { ref, set, get, remove, onValue } from 'firebase/database'
@@ -45,7 +46,7 @@
 
     async function startCtrlClient (pc: RTCPeerConnection, sdp: string) {
         console.log ('Starting Ctrl Client')
-        let ctrlClientId
+        let ctrlClientId : string
         if (typeof crypto !== `undefined` && typeof crypto.randomUUID === `function`) {
             ctrlClientId = crypto.randomUUID ()
         } else {
@@ -66,15 +67,14 @@
             }
         }
 
-        async function removeWaitingRoom (ctrlClientId: string) {
+        async function removeWaitingRoom (oldCtrlClientId: string) {
             try {
-                await remove (ref (db, `waitingRooms/${ ctrlClientId }`))
-                console.log(`Deleted waiting room: ${ ctrlClientId }`)
+                await remove (ref (db, `waitingRooms/${ oldCtrlClientId }`))
+                console.log(`Deleted waiting room: ${ oldCtrlClientId }`)
             } catch (error) {
-                console.error (`Error deleting waiting room ${ ctrlClientId }:`, error)
+                console.error (`Error deleting waiting room ${ oldCtrlClientId }:`, error)
             }
         }
-
 
         try {
             console.log (`Deleting existing waiting rooms`)
@@ -97,6 +97,32 @@
             await set (waitingRoomRef, true)
             console.log (`Waiting room created: ${ ctrlClientId }`)
         } catch (error) { console.error (`Error creating waiting room: ${ error }`) }
+
+        async function removeCtrlOffer (oldCtrlClientId: string) {
+            if (oldCtrlClientId === ctrlClientId) return
+            try {
+                await remove (ref (db, `ctrlOffers/${ oldCtrlClientId }`))
+                console.log(`Deleted ctrl offer: ${ oldCtrlClientId }`)
+            } catch (error) {
+                console.error (`Error deleting ctrl offer ${ oldCtrlClientId }:`, error)
+            }
+        }
+
+        try {
+            console.log (`Deleting existing ctrl offers`)
+            const ctrlOffersRef = ref (db, 'ctrlOffers')
+            const snapshot = await get (ctrlOffersRef)
+            if (snapshot.exists ()) {
+                snapshot.forEach(childSnapshot => {
+                    console.log (`Found ctrl offer: ${ childSnapshot.key }`)
+                    const ctrlClientId = childSnapshot.key
+                    removeCtrlOffer(ctrlClientId)
+                })
+            }
+            console.log (`Ctrl offers deleted`)
+        } catch (error) { 
+            console.error(`Error deleting existing ctrl offers: ${ error }`) 
+        }
 
         const offerRef = ref (db, `ctrlOffers/${ ctrlClientId }/offer`)
         try {

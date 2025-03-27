@@ -1,3 +1,4 @@
+<!-- Filename: src/routes/synthesis/connecting/%2Bpage.svelte -->
 <script lang="ts">
     import { audioContext } from "$lib/stores/audioContext"
     import { onMount } from "svelte"
