@@ -1,160 +1,154 @@
 <!-- Filename: src/routes/ctrl/active/%2Bpage.svelte -->
 <script lang="ts">
-    import { user, db } from '$lib/firebase'
-    import { ref, set, get, remove, onValue } from 'firebase/database'
-    import { browser }  from '$app/environment'
-    import { goto }     from '$app/navigation'
-    import { onMount }  from 'svelte'
+import { user, db } from '$lib/firebase';
+import { ref, set, get, remove, onValue } from 'firebase/database';
+import { browser } from '$app/environment';
+import { goto } from '$app/navigation';
+import { onMount } from 'svelte';
 
-    interface IceServer {
-        urls: string | string[];
-        username?: string;
-        credential?: string;
+interface IceSvr {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
+interface PgData {
+  iceServers: IceSvr[];
+  error?: string;
+  twilioPhone?: string;
+}
+
+export let data: PgData;
+$: ({ iceServers, error } = data);
+$: if (browser && !$user) goto('/ctrl');
+
+onMount(async () => {
+  console.log('iceServers:', iceServers);
+  const pc = new RTCPeerConnection({ iceServers });
+  const dc = pc.createDataChannel('ctrl');
+  dc.onopen = () => console.log('DC opened');
+  dc.onmessage = (e) => console.log(`DC msg: ${e.data}`);
+  dc.onclose = () => console.log('DC closed');
+  dc.onerror = (e) => console.error(`DC err: ${e}`);
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  const { sdp } = offer;
+  if (typeof sdp === 'string') {
+    startCtrlClient(pc, sdp);
+  } else {
+    console.error('Invalid SDP:', sdp);
+  }
+});
+
+async function startCtrlClient(
+  pc: RTCPeerConnection,
+  sdp: string
+) {
+  console.log('Starting Ctrl Client');
+  const genUuid = () =>
+    crypto?.randomUUID?.() ||
+    'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c == 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  const ctrlId = genUuid();
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) {
+      set(ref(db, `ctrlOffers/${ctrlId}/ice`), e.candidate.toJSON());
+      console.log('ICE:', e.candidate.toJSON());
     }
+  };
 
-    interface PageData {
-        iceServers: IceServer[];
-        error?: string;
-        twilioPhone?: string;
+  try {
+    await set(ref(db, `ctrlOffers/${ctrlId}/offer`), sdp);
+  } catch (e) {
+    console.error('Err set offer:', e);
+    return;
+  }
+
+  const rmWaitRoom = async (id: string) => {
+    try {
+      await remove(ref(db, `waitingRooms/${id}`));
+      console.log(`Del wait: ${id}`);
+    } catch (e) {
+      console.error(`Err del wait ${id}:`, e);
     }
+  };
 
-    export let data: PageData
+  try {
+    console.log('Del exist waits');
+    const snap = await get(ref(db, 'waitingRooms'));
+    const removalPromises: Promise<void>[] = [];
+    snap.forEach((s) => {
+      removalPromises.push(rmWaitRoom(String(s.key)));
+    });
+    await Promise.all(removalPromises);
+    console.log('Waits del');
+  } catch (e) {
+    console.error('Err del exist waits:', e);
+  }
 
-    $: ({ iceServers, error } = data)
+  // Re-inserting the waiting room creation logic:
+  try {
+    console.log(`Create wait: ${ctrlId}`);
+    await set(ref(db, `waitingRooms/${ctrlId}`), true);
+    console.log(`Wait created: ${ctrlId}`);
+  } catch (e) {
+    console.error(`Err create wait:`, e);
+  }
 
-    $: if (browser && !$user)  goto('/ctrl')
-
-
-    onMount (async () => {
-        console.log (`iceServers:`, iceServers)
-        const pc = new RTCPeerConnection ({
-            iceServers
-        })
-        const dataChannel = pc.createDataChannel ('ctrl')
-        dataChannel.onopen = () => console.log ('Data channel opened')
-        dataChannel.onmessage = e => console.log (`Data channel message: ${ e.data }`)
-        dataChannel.onclose = () => console.log ('Data channel closed')
-        dataChannel.onerror = e => console.error (`Data channel error: ${ e }`)
-
-        const offer = await pc.createOffer ()
-        await pc.setLocalDescription (offer)
-        const { sdp } = offer
-
-        if (typeof sdp === 'string') startCtrlClient (pc, sdp)
-        else console.error ('Invalid SDP:', sdp)
-    })
-
-    async function startCtrlClient (pc: RTCPeerConnection, sdp: string) {
-        console.log ('Starting Ctrl Client')
-        let ctrlClientId : string
-        if (typeof crypto !== `undefined` && typeof crypto.randomUUID === `function`) {
-            ctrlClientId = crypto.randomUUID ()
-        } else {
-            ctrlClientId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace (/[xy]/g, c => {
-                const r = Math.random () * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8)
-                return v.toString (16)
-            })
-        }
-
-        // const activeCtrlClientIdRef = ref (db, `activeCtrlClientID`)
-        // await set (activeCtrlClientIdRef, ctrlClientId)
-
-        pc.onicecandidate = e => {
-            if (e.candidate) {
-                const iceCandidateRef = ref (db, `ctrlOffers/${ ctrlClientId }/iceCandidates`) //Store ICE candidates
-                set (iceCandidateRef, e.candidate.toJSON ())//Use push for a list of candidates
-                console.log('ICE candidate:', e.candidate.toJSON ())
-            }
-        }
-
-        async function removeWaitingRoom (oldCtrlClientId: string) {
-            try {
-                await remove (ref (db, `waitingRooms/${ oldCtrlClientId }`))
-                console.log(`Deleted waiting room: ${ oldCtrlClientId }`)
-            } catch (error) {
-                console.error (`Error deleting waiting room ${ oldCtrlClientId }:`, error)
-            }
-        }
-
-        try {
-            console.log (`Deleting existing waiting rooms`)
-            const waitingRoomsRef = ref (db, 'waitingRooms')
-            const snapshot = await get (waitingRoomsRef)
-            if (snapshot.exists ()) {
-                snapshot.forEach(childSnapshot => {
-                    const ctrlClientId = childSnapshot.key
-                    removeWaitingRoom(ctrlClientId)
-                })
-            }
-            console.log (`Existing waiting rooms deleted`)
-        } catch (error) { 
-            console.error(`Error deleting existing waiting rooms: ${ error }`) 
-        }
-
-        const waitingRoomRef = ref (db, `waitingRooms/${ ctrlClientId }`)
-        try {
-            console.log (`Creating waiting room: ${ ctrlClientId }`)
-            await set (waitingRoomRef, true)
-            console.log (`Waiting room created: ${ ctrlClientId }`)
-        } catch (error) { console.error (`Error creating waiting room: ${ error }`) }
-
-        async function removeCtrlOffer (oldCtrlClientId: string) {
-            if (oldCtrlClientId === ctrlClientId) return
-            try {
-                await remove (ref (db, `ctrlOffers/${ oldCtrlClientId }`))
-                console.log(`Deleted ctrl offer: ${ oldCtrlClientId }`)
-            } catch (error) {
-                console.error (`Error deleting ctrl offer ${ oldCtrlClientId }:`, error)
-            }
-        }
-
-        try {
-            console.log (`Deleting existing ctrl offers`)
-            const ctrlOffersRef = ref (db, 'ctrlOffers')
-            const snapshot = await get (ctrlOffersRef)
-            if (snapshot.exists ()) {
-                snapshot.forEach(childSnapshot => {
-                    console.log (`Found ctrl offer: ${ childSnapshot.key }`)
-                    const ctrlClientId = childSnapshot.key
-                    removeCtrlOffer(ctrlClientId)
-                })
-            }
-            console.log (`Ctrl offers deleted`)
-        } catch (error) { 
-            console.error(`Error deleting existing ctrl offers: ${ error }`) 
-        }
-
-        const offerRef = ref (db, `ctrlOffers/${ ctrlClientId }/offer`)
-        try {
-            await set (offerRef, sdp)
-        } catch (error) { console.error (`Error setting offer: ${ error }`) }
-
-        const answerRef = ref (db, `ctrlOffers/${ ctrlClientId }/answer`)
-        onValue (answerRef, async snapshot => {
-            const answer = snapshot.val ()
-            if (answer) {
-                try {
-                    await pc.setRemoteDescription ({ type: "answer", sdp: answer })
-                    console.log ("Remote description set (ctrl)")
-                } catch (e) {
-                    console.error("Error setting remote description (ctrl):", e)
-                }
-            }
-        })
-
-        onValue(ref(db, `ctrlOffers/${ctrlClientId}/synthIceCandidates`), async (snapshot) => {
-            const iceCandidate = snapshot.val ()
-            if (iceCandidate) {
-                try {
-                    await pc.addIceCandidate (iceCandidate)
-                    console.log ("ICE candidate added (ctrl):", iceCandidate)
-                } catch (e) {
-                    console.error ("Error adding ICE candidate (ctrl):", e)
-                }
-            }
-        })
-
+  const rmOffer = async (id: string) => {
+    if (id === ctrlId) return;
+    try {
+      await remove(ref(db, `ctrlOffers/${id}`));
+      console.log(`Del offer: ${id}`);
+    } catch (e) {
+      console.error(`Err del offer ${id}:`, e);
     }
+  };
+
+  try {
+    console.log('Del exist offers');
+    const snap = await get(ref(db, 'ctrlOffers'));
+    const deletionPromises: Promise<void>[] = [];
+    snap.forEach((s) => {
+      if (s.key !== ctrlId) {
+        deletionPromises.push(rmOffer(s.key));
+      }
+    });
+    await Promise.all(deletionPromises);
+    console.log('Offers del');
+  } catch (e) {
+    console.error('Err del exist offers:', e);
+  }
+
+  onValue(ref(db, `ctrlOffers/${ctrlId}/answer`), async (snap) => {
+    const ans = snap.val();
+    if (ans) {
+      try {
+        await pc.setRemoteDescription({ type: 'answer', sdp: ans });
+        console.log('Remote desc set (ctrl)');
+      } catch (e) {
+        console.error('Err set remote desc (ctrl):', e);
+      }
+    }
+  });
+
+  onValue(ref(db, `ctrlOffers/${ctrlId}/synthIce`), async (snap) => {
+    const ice = snap.val();
+    if (ice) {
+      try {
+        await pc.addIceCandidate(ice);
+        console.log('ICE added (ctrl):', ice);
+      } catch (e) {
+        console.error('Err add ICE (ctrl):', e);
+      }
+    }
+  });
+}
 </script>
 <!-- <link rel="stylesheet" href="src/app.css"> -->
 <h1 class="text-3xl font-bold underline">ACTIVE</h1>

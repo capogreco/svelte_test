@@ -1,130 +1,123 @@
 <!-- Filename: src/routes/synthesis/connecting/%2Bpage.svelte -->
 <script lang="ts">
-    import { audioContext } from "$lib/stores/audioContext"
-    import { onMount } from "svelte"
-    import { db } from "$lib/firebase"
-    import { query, limitToFirst, ref, set, onValue } from "firebase/database"
+import { audioContext } from "$lib/stores/audioContext";
+import { onMount } from "svelte";
+import { db } from "$lib/firebase";
+import { query, limitToFirst, ref, set, onValue } from "firebase/database";
 
-    interface IceServer {
-        urls: string | string[];
-        username?: string;
-        credential?: string;
+interface IceSvr {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
+interface PgData {
+  iceServers: IceSvr[];
+  error?: string;
+  twilioPhone?: string;
+}
+
+export let data: PgData;
+$: ({ iceServers, error } = data);
+let a_cxt: AudioContext | null = null;
+$: audioContext.subscribe((v) => (a_cxt = v));
+
+onMount(() => {
+  if (a_cxt) console.dir(`AC state: ${a_cxt.state}`);
+  startSynthesisClient();
+});
+
+async function startSynthesisClient() {
+  console.log('Starting Synthesis Client');
+  const synthId = crypto?.randomUUID?.() ||
+    'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c == 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  console.log(`Synth ID: ${synthId}`);
+
+  const waitsRef = ref(db, `waitingRooms`);
+  const firstWaitQuery = query(waitsRef, limitToFirst(1));
+  let ctrlId: string | null = null;
+
+  onValue(firstWaitQuery, (snapshot) => {
+    console.log('Checking for waiting control client...');
+    snapshot.forEach((childSnap) => {
+      ctrlId = childSnap.key;
+      console.log(`Found control client ID: ${ctrlId}`);
+      setupWebRTC(ctrlId);
+    });
+    if (!snapshot.exists()) {
+      console.log('No waiting control client found.');
+      // Optionally handle the case where no control client is waiting
     }
+  });
+}
 
-    interface PageData {
-        iceServers: IceServer[];
-        error?: string;
-        twilioPhone?: string;
+async function setupWebRTC(ctrlId: string) {
+  if (!ctrlId) {
+    console.warn('Control client ID not yet available.');
+    return;
+  }
+
+  const answerRef = ref(db, `ctrlOffers/${ctrlId}/answer`);
+  const iceCandidateRef = ref(db, `ctrlOffers/${ctrlId}/ice`);
+  const offerRef = ref(db, `ctrlOffers/${ctrlId}/offer`);
+
+  console.log('iceServers:', data.iceServers);
+  const pc = new RTCPeerConnection({ iceServers: data.iceServers });
+
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      set(ref(db, `ctrlOffers/${ctrlId}/synthIce`), event.candidate);
+    //   console.log('ICE (synth):', event.candidate);
     }
+  };
 
-    export let data: PageData
+  pc.onicegatheringstatechange = () =>
+    console.log('ICE gathering state:', pc.iceGatheringState);
 
-    $: ({ iceServers, error } = data)
+  pc.ondatachannel = (event) => {
+    console.log ('Data channel event:', event);
+    const dataChannel = event.channel;
+    dataChannel.onopen = () => console.log('DC opened (synth)');
+    dataChannel.onmessage = (e) => console.log(`DC msg (synth): ${e.data}`);
+    dataChannel.onclose = () => console.log('DC closed (synth)');
+    dataChannel.onerror = (e) => console.error(`DC err (synth):`, e);
+  };
 
-    let a_cxt : AudioContext | null = null
-
-    $: audioContext.subscribe (v => a_cxt = v)
-
-    onMount (() => {
-        if (a_cxt) console.dir (`audio context is ${ a_cxt.state }`)
-        startSynthesisClient ()
-    })
-
-    async function startSynthesisClient () {
-        console.log ('Starting Synthesis Client')
-
-        let synthClientId
-        if (typeof crypto !== `undefined` && typeof crypto.randomUUID === `function`) {
-            synthClientId = crypto.randomUUID ()
-        } else {
-            synthClientId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-                const r = Math.random () * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8)
-                return v.toString (16)
-            })
-        }
-
-        console.log (`Synthesis Client ID is: ${ synthClientId }`)
-
-        const waitingRoomsRef = ref (db, `waitingRooms`)
-        const queryRef = query (waitingRoomsRef, limitToFirst (1))
-
-        let ctrlClientId: string | null = null
-
-        onValue (queryRef, snapshot => {
-            console.log ('Checking for waiting rooms')
-            snapshot.forEach (childSnapshot => {
-                const { key } = childSnapshot
-                console.log (`Found waiting room: ${ key }`)
-                ctrlClientId = key
-            })
-        })
-
-        const answerRef       = ref (db, `ctrlOffers/${ ctrlClientId }/answer`)
-        const iceCandidateRef = ref (db, `ctrlOffers/${ ctrlClientId }/iceCandidates`)
-
-        console.log (`iceServers:`, iceServers)
-        const pc = new RTCPeerConnection ({
-            iceServers
-        })
-
-        pc.onicecandidate = event => {
-            if (event.candidate) {
-                set (ref (db, `ctrlOffers/${ ctrlClientId }/synthIceCandidates`), event.candidate)
-                console.log ('ICE candidate (synthesis):', event.candidate)
+  onValue(offerRef, async (snapshot) => {
+    const offer = snapshot.val();
+    if (offer) {
+    //   console.log('Offer received (synth):', offer);
+      try {
+        await pc.setRemoteDescription({ type: 'offer', sdp: offer });
+        console.log('Remote description set (synth)');
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        console.log('Local description set (synth)');
+        set(answerRef, answer.sdp);
+        console.log('Answer sent (synth)');
+        onValue(iceCandidateRef, async (snap) => {
+          const ice = snap.val();
+          if (ice) {
+            try {
+              await pc.addIceCandidate(ice);
+              console.log('ICE added (synth):', ice);
+            } catch (e) {
+              console.error('Error adding ICE (synth):', e);
             }
-        }
-
-        pc.onicegatheringstatechange = () => {
-          console.log ('ICE gathering state:', pc.iceGatheringState)
-        }
-
-        pc.ondatachannel = event => {
-            const dataChannel = event.channel
-            dataChannel.onopen    = () => console.log ('Data channel opened (synthesis)')
-            dataChannel.onmessage = e  => console.log (`Data channel message (synthesis): ${ e.data }`)
-            dataChannel.onclose   = () => console.log ('Data channel closed (synthesis)')
-            dataChannel.onerror   = e  => console.error (`Data channel error (synthesis): ${ e }`)
-        }
-
-        const offerRef = ref (db, `ctrlOffers/${ ctrlClientId }/offer`)
-        onValue (offerRef, async snapshot => {
-            console.log ('Offer received (synthesis)')
-            const offer = await snapshot.val ()
-            console.log("Offer value:", offer)
-            if (offer) {
-                // console.log("Offer value:", offer)
-                try {
-                    await pc.setRemoteDescription ({ type: "offer", sdp: offer })
-                    console.log ("Remote description set (synthesis)")
-                    const answer = await pc.createAnswer ()
-                    await pc.setLocalDescription(answer)
-                    console.log ("Local description set (synthesis)")
-                    set (answerRef, answer.sdp)
-                    console.log ("Answer sent (synthesis)")
-                    onValue (ref (db, `ctrlOffers/${ ctrlClientId }/iceCandidates`), async (snapshot) => {
-                        const iceCandidate = snapshot.val ()
-                        if (iceCandidate) {
-                            try {
-                                await pc.addIceCandidate (iceCandidate)
-                                console.log ("ICE candidate added (synthesis):", iceCandidate)
-                            } catch (e) {
-                                console.error ("Error adding ICE candidate (synthesis):", e);
-                            }
-                        }
-                    })
-                } catch (error) {
-                    console.error ("Error setting descriptions or creating answer (synthesis):", error);
-                }
-            }
+          }
         });
-
-        // const offer = await pc.createOffer ()
-        // await pc.setLocalDescription (offer)
-        // const { sdp } = offer
-
-        // if (typeof sdp === 'string') startSynthesisClient (pc, sdp)
-        // else console.error ('Invalid SDP:', sdp)
+      } catch (error) {
+        console.error('Error setting descriptions/creating answer:', error);
+      }
+    } else {
+      console.log('No offer received yet.');
     }
+  });
+}
 </script>
 
 <main class="flex items-center justify-center min-h-screen">
