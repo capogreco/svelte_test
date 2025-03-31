@@ -18,95 +18,98 @@ interface PgData {
 }
 
 export let data: PgData;
-$: ({ iceServers, error } = data);
-let a_cxt: AudioContext | null = null;
-$: audioContext.subscribe((v) => (a_cxt = v));
+$: ({ iceServers } = data)
+let a_cxt: AudioContext | null = null
+$: audioContext.subscribe (v => (a_cxt = v))
 
 onMount(() => {
-  if (a_cxt) console.dir(`AC state: ${a_cxt.state}`);
-  startSynthesisClient();
+  if (a_cxt) console.dir (`AC state: ${ a_cxt.state }`)
+  startSynthesisClient ()
 });
 
-async function startSynthesisClient() {
-  console.log('Starting Synthesis Client');
+async function startSynthesisClient () {
+  console.log ('Starting Synthesis Client')
   const synthId = crypto?.randomUUID?.() ||
     'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
+      const r = (Math.random () * 16) | 0;
       const v = c == 'x' ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
+      return v.toString (16)
     });
-  console.log(`Synth ID: ${synthId}`);
+  console.log (`Synth ID: ${synthId}`)
 
-  const waitsRef = ref(db, `waitingRooms`);
-  const firstWaitQuery = query(waitsRef, limitToFirst(1));
-  let ctrlId: string | null = null;
+  const waitsRef = ref (db, `waitingRooms`)
+  const firstWaitQuery = query (waitsRef, limitToFirst (1))
+  let ctrlId: string | null = null
 
-  onValue(firstWaitQuery, (snapshot) => {
-    console.log('Checking for waiting control client...');
-    snapshot.forEach((childSnap) => {
-      ctrlId = childSnap.key;
-      console.log(`Found control client ID: ${ctrlId}`);
-      setupWebRTC(ctrlId);
-    });
-    if (!snapshot.exists()) {
-      console.log('No waiting control client found.');
+  onValue (firstWaitQuery, snapshot => {
+    console.log ('Checking for waiting control client.')
+    snapshot.forEach (childSnap => {
+      ctrlId = childSnap.key
+      console.log (`Found control client ID: ${ ctrlId }`)
+      setupWebRTC (ctrlId)
+    })
+    if (!snapshot.exists ()) {
+      console.log ('No waiting control client found.')
       // Optionally handle the case where no control client is waiting
     }
   });
 }
 
-async function setupWebRTC(ctrlId: string) {
+async function setupWebRTC (ctrlId: string) {
   if (!ctrlId) {
-    console.warn('Control client ID not yet available.');
-    return;
+    console.warn ('Control client ID not yet available.')
+    return
   }
 
-  const answerRef = ref(db, `ctrlOffers/${ctrlId}/answer`);
-  const iceCandidateRef = ref(db, `ctrlOffers/${ctrlId}/ice`);
-  const offerRef = ref(db, `ctrlOffers/${ctrlId}/offer`);
+  console.log ('iceServers:', iceServers)
+  const pc = new RTCPeerConnection({ iceServers })
 
-  console.log('iceServers:', data.iceServers);
-  const pc = new RTCPeerConnection({ iceServers: data.iceServers });
-
-  pc.onicecandidate = (event) => {
+  pc.onicecandidate = async event => {
     if (event.candidate) {
-      set(ref(db, `ctrlOffers/${ctrlId}/synthIce`), event.candidate);
-    //   console.log('ICE (synth):', event.candidate);
+      // console.log ('ICE candidate event triggerred !!!!!!!!!!!')
+      try {
+        await set (ref (db, `ctrlOffers/${ ctrlId }/synthIce`), event.candidate.toJSON ())
+        console.log ('ICE candidate sent:', event.candidate.toJSON ())
+      } catch (e) {
+        console.error ('Error setting ICE candidate:', e)
+      }
     }
-  };
+  }
 
   pc.onicegatheringstatechange = () =>
-    console.log('ICE gathering state:', pc.iceGatheringState);
+    console.log ('ICE gathering state:', pc.iceGatheringState)
 
-  pc.ondatachannel = (event) => {
-    console.log ('Data channel event:', event);
-    const dataChannel = event.channel;
-    dataChannel.onopen = () => console.log('DC opened (synth)');
-    dataChannel.onmessage = (e) => console.log(`DC msg (synth): ${e.data}`);
-    dataChannel.onclose = () => console.log('DC closed (synth)');
-    dataChannel.onerror = (e) => console.error(`DC err (synth):`, e);
-  };
+  pc.ondatachannel = event => {
+    console.log ('Data channel event:', event)
+    const dataChannel = event.channel
+    dataChannel.onopen = () => console.log('DC opened')
+    dataChannel.onmessage = e => console.log(`DC msg: ${e.data}`)
+    dataChannel.onclose = () => console.log('DC closed')
+    dataChannel.onerror = e => console.error(`DC err:`, e)
+  }
 
-  onValue(offerRef, async (snapshot) => {
-    const offer = snapshot.val();
+
+  onValue (ref (db, `ctrlOffers/${ ctrlId }/offer`), async snapshot => {
+    const offer = snapshot.val ()
     if (offer) {
     //   console.log('Offer received (synth):', offer);
       try {
-        await pc.setRemoteDescription({ type: 'offer', sdp: offer });
-        console.log('Remote description set (synth)');
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        console.log('Local description set (synth)');
-        set(answerRef, answer.sdp);
-        console.log('Answer sent (synth)');
-        onValue(iceCandidateRef, async (snap) => {
-          const ice = snap.val();
+        await pc.setRemoteDescription ({ type: 'offer', sdp: offer })
+        console.log ('Remote description set (synth)')
+        const answer = await pc.createAnswer ()
+        await pc.setLocalDescription (answer)
+        console.log ('Local description set (synth)')
+        set (ref (db, `ctrlOffers/${ ctrlId }/answer`), answer.sdp)
+        console.log ('Answer sent (synth)');
+
+        onValue (ref (db, `ctrlOffers/${ ctrlId }/ice`), async (snap) => {
+          const ice = snap.val ()
           if (ice) {
             try {
-              await pc.addIceCandidate(ice);
-              console.log('ICE added (synth):', ice);
+              await pc.addIceCandidate (ice)
+              console.log ('ICE added (synth):', ice)
             } catch (e) {
-              console.error('Error adding ICE (synth):', e);
+              console.error('Error adding ICE (synth):', e)
             }
           }
         });
