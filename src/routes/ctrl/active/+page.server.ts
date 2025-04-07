@@ -5,8 +5,7 @@ import twilio from 'twilio'
 export const load = (async () => {
     try {
         const client = twilio (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        const turnCredential = await client.tokens.create ({ ttl: 21600 })
-        // console.log (`ICE credentials:`, turnCredential.iceServers)
+        const turnCredential = await client.tokens.create ({ ttl: 3600 })
         return { iceServers: turnCredential.iceServers }
     } catch (error) {
         console.error (`Error fetching Twilio TURN credentials:`, error)
