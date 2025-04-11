@@ -28,4 +28,4 @@ vite.config.ts.timestamp-*
 .firebase/emulators/
 
 # Consider adding this if the generated function code isn't needed in Git
-.firebase/distributedsynthesis/ # Or a more specific path if known
+.firebase/distributedsynthesis/functions/chunks/private.js
