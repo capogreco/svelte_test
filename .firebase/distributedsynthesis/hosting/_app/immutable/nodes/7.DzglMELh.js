@@ -1,1 +1,0 @@
-import"../chunks/CWj6FrbW.js";import"../chunks/BFwXdMSv.js";import{t as n,a}from"../chunks/JLh8mSWP.js";var o=n('<main class="flex items-center justify-center min-h-screen"><h1 class="text-3xl font-bold underline">CONNECT</h1></main>');function s(e){var t=o();a(e,t)}export{s as component};

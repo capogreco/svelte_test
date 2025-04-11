@@ -1,1 +1,0 @@
-import"../chunks/CWj6FrbW.js";import"../chunks/BFwXdMSv.js";import{t,a}from"../chunks/JLh8mSWP.js";var i=t('<main class="flex items-center justify-center min-h-screen"><a href="/synthesis/connecting"><h1 class="text-3xl font-bold underline">CONNECT</h1></a></main>');function m(e){var n=i();a(e,n)}export{m as component};
