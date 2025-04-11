@@ -1,10 +1,11 @@
 import type { PageServerLoad } from './$types';
-import { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN } from '$env/static/private'
+// import { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN } from '$env/static/private'
+import { env } from '$env/dynamic/private'
 import twilio from 'twilio'
 
 export const load = (async () => {
     try {
-        const client = twilio (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        const client = twilio (env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN)
         const turnCredential = await client.tokens.create ({ ttl: 21600 })
         // console.log (`ICE credentials:`, turnCredential.iceServers)
         return { iceServers: turnCredential.iceServers }
