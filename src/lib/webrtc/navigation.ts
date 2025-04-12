@@ -141,12 +141,32 @@ export function recoverConnectionAfterNavigation() {
     }
   }
   
-  // If we recovered objects, reapply protection
+  // If we recovered objects, restore handlers and reapply protection
   if (recoveredDC) {
+    // Restore original handlers if available
+    if ((recoveredDC as any)._originalHandlers) {
+      console.log(`[Navigation] Restoring original data channel handlers`);
+      Object.entries((recoveredDC as any)._originalHandlers).forEach(([event, handler]) => {
+        if (handler) {
+          console.log(`[Navigation] Restoring ${event} handler`);
+          (recoveredDC as any)[event] = handler;
+        }
+      });
+    }
     protectDataChannel(recoveredDC, connectionId || 'unknown');
   }
   
   if (recoveredPC) {
+    // Restore original handlers if available
+    if ((recoveredPC as any)._originalHandlers) {
+      console.log(`[Navigation] Restoring original peer connection handlers`);
+      Object.entries((recoveredPC as any)._originalHandlers).forEach(([event, handler]) => {
+        if (handler) {
+          console.log(`[Navigation] Restoring ${event} handler`);
+          (recoveredPC as any)[event] = handler;
+        }
+      });
+    }
     protectPeerConnection(recoveredPC, connectionId || 'unknown');
   }
   

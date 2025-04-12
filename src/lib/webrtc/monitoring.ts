@@ -3,6 +3,7 @@
  * This file contains utility functions for monitoring WebRTC connections
  * health and detecting disconnects in a robust way.
  */
+import { webrtcStore } from '../stores/webrtcStore';
 
 // Constants for connection monitoring
 export const CONNECTION_PING_INTERVAL = 3000; // Send ping every 3 seconds
@@ -110,6 +111,9 @@ export function startConnectionMonitoring(
         missedPings++;
         console.warn(`[Monitor ${id}] Missed ping #${missedPings} (no response for ${timeSinceLastPong/1000}s)`);
         
+        // Update the store with the missed ping count
+        webrtcStore.updateStatus(`Connection unstable - retry ${missedPings}/${missedPingsThreshold}`);
+        
         // Only disconnect after hitting the threshold
         if (missedPings >= missedPingsThreshold) {
           console.warn(`[Monitor ${id}] Connection timed out after ${missedPings} missed pings`);
@@ -122,6 +126,7 @@ export function startConnectionMonitoring(
         // Connection recovered
         console.log(`[Monitor ${id}] Connection recovered, resetting missed pings counter`);
         missedPings = 0;
+        webrtcStore.updateStatus('Connected (recovered)');
         options.onReconnect?.();
       }
     }
@@ -141,8 +146,12 @@ export function startConnectionMonitoring(
     if (missedPings > 0) {
       console.log(`[Monitor ${id}] Connection recovered after ${missedPings} missed pings`);
       missedPings = 0;
+      webrtcStore.updateStatus('Connected (recovered)');
       options.onReconnect?.();
     }
+    
+    // Update latency in store
+    webrtcStore.updateLatency(latency);
     
     // Call latency callback if provided
     options.onLatencyMeasured?.(latency);
@@ -172,4 +181,62 @@ export function startConnectionMonitoring(
       isActive: !isStopped && intervalId !== null
     })
   };
+}
+
+/**
+ * Helper function to handle message received through data channel
+ * Also used for unified ping/pong protocol
+ * @param message Message received
+ * @param dataChannel Data channel to respond on
+ * @param monitor Connection monitor to update
+ * @returns True if message was handled
+ */
+export function handleDataChannelMessage(
+  message: string,
+  dataChannel: RTCDataChannel,
+  monitor: ReturnType<typeof startConnectionMonitoring>
+): boolean {
+  // Handle ping messages by responding with pong
+  if (message.startsWith('ping:')) {
+    const pingTimestamp = message.substring(5);
+    if (dataChannel.readyState === 'open') {
+      try {
+        dataChannel.send(`pong:${pingTimestamp}`);
+      } catch (e) {
+        console.warn(`Error sending pong response:`, e);
+      }
+    }
+    return true;
+  }
+  
+  // Handle pong messages by updating monitoring
+  if (message.startsWith('pong:')) {
+    const pingTimestamp = parseInt(message.substring(5), 10);
+    if (!isNaN(pingTimestamp)) {
+      monitor.handlePong(pingTimestamp);
+    }
+    return true;
+  }
+  
+  // Simple ping (legacy format)
+  if (message === 'ping') {
+    if (dataChannel.readyState === 'open') {
+      try {
+        dataChannel.send('pong');
+      } catch (e) {
+        console.warn(`Error sending legacy pong response:`, e);
+      }
+    }
+    return true;
+  }
+  
+  // Simple pong (legacy format)
+  if (message === 'pong') {
+    // Treat as a successful pong for monitoring
+    monitor.handlePong(Date.now() - 100); // Approximate a 100ms latency
+    return true;
+  }
+  
+  // Message not handled
+  return false;
 }

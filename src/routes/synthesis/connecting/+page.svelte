@@ -865,40 +865,199 @@
         }, 1000);
         
         // Update status
-        updateStatus("Connection established - Debug mode (staying on connecting page)");
+        updateStatus("Connection established - Connection stabilizing...");
         
-        // In debug mode, we'll skip navigation to stay on this page and see logs
-        console.log("⚠️ DEBUG MODE: Skipping navigation to connected page to view logs");
-        logger.info('Navigation', 'DEBUG MODE: Skipping navigation to connected page to view logs');
-        
-        // Store navigation data in session storage in case we need it
+        // Store navigation data in session storage
         if (browser) {
-          sessionStorage.setItem('debugMode', 'true');
+          sessionStorage.setItem('debugMode', 'false');
           sessionStorage.setItem('connectionSuccess', 'true');
           sessionStorage.setItem('connectedAt', Date.now().toString());
+          sessionStorage.setItem('connectionStabilizing', 'true');
         }
         
-        /* 
-        // Navigation code (commented out for debugging)
+        // Prepare for future navigation, but don't navigate yet
         // 1. Prepare WebRTC objects for safe navigation
         prepareForNavigation(dataChannel, peerConnection, ctrlId);
         
-        // 2. Setup heartbeat mechanism to keep connection alive during navigation
+        // 2. Setup heartbeat mechanism to keep connection alive
         const heartbeatIntervals = createHeartbeatMechanism(dataChannel, ctrlId);
         
-        // 3. Perform the actual navigation with our utility
-        navigateWithProtection({
-          ctrlId,
-          url: '/synthesis/connected',
-          params: {
-            auto: 'true',
-            protect: 'ultra'
-          },
-          ensureTimeout: 250,
-          retryCount: 2,
-          synthetic: true // Use direct location.href for navigation
-        });
-        */
+        // Show a manual navigation button after stabilization period
+        setTimeout(() => {
+          updateStatus("Connection stabilized - Ready for navigation");
+          
+          if (browser) {
+            // Update session storage to indicate stabilized connection
+            sessionStorage.setItem('connectionStabilizing', 'false');
+            sessionStorage.setItem('connectionStabilized', 'true');
+            
+            // Add a manual navigation button to the UI
+            const navButtonContainer = document.createElement('div');
+            navButtonContainer.style.cssText = `
+              position: fixed;
+              bottom: 100px;
+              left: 50%;
+              transform: translateX(-50%);
+              z-index: 9999;
+              text-align: center;
+            `;
+            
+            const navButton = document.createElement('button');
+            navButton.textContent = 'Show Connected View';
+            navButton.style.cssText = `
+              padding: 12px 24px;
+              background: rgba(40, 180, 100, 0.9);
+              color: white;
+              border: none;
+              border-radius: 4px;
+              cursor: pointer;
+              font-size: 16px;
+              font-weight: bold;
+              box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+              margin-bottom: 10px;
+              display: block;
+            `;
+            
+            const statusText = document.createElement('div');
+            statusText.textContent = 'Connection is stable. Click to show connected view.';
+            statusText.style.cssText = `
+              color: rgba(100, 220, 150, 0.9);
+              font-size: 14px;
+              margin-top: 8px;
+            `;
+            
+            navButton.onclick = () => {
+              // Update the button to show we're preparing
+              navButton.textContent = 'Preparing navigation...';
+              navButton.disabled = true;
+              
+              // Enhanced approach: 
+              // 1. Store critical objects in multiple places for redundancy
+              window.syntheticDataChannel = dataChannel;
+              window.syntheticPeerConnection = peerConnection;
+              window.synthControllerID = ctrlId;
+              
+              // 2. Store in session storage for extra backup
+              if (browser) {
+                // Store connection details for maximum redundancy
+                sessionStorage.setItem('synthConnectionId', ctrlId);
+                sessionStorage.setItem('dataChannelState', 'open');
+                sessionStorage.setItem('connectionState', 'connected');
+                sessionStorage.setItem('manualNavigation', 'true');
+                sessionStorage.setItem('navigationPrepared', 'true');
+                
+                try {
+                  // Attempt to store WebRTC state
+                  sessionStorage.setItem('webrtcState', JSON.stringify({
+                    ctrlId,
+                    timestamp: Date.now(),
+                    synthId: synthId
+                  }));
+                } catch (e) {
+                  console.warn(`[Navigation] Could not store webrtcState:`, e);
+                }
+              }
+              
+              // 3. Make the DC and PC immune to garbage collection by storing in a global array
+              if (!window._persistConnections) {
+                window._persistConnections = [];
+              }
+              window._persistConnections.push({
+                dc: dataChannel,
+                pc: peerConnection,
+                ctrlId,
+                timestamp: Date.now(),
+                synthId
+              });
+              
+              // 4. Create a global protection mechanism
+              window.protectedDC = dataChannel;
+              window.protectedPC = peerConnection;
+              
+              // 5. Update the button to show navigation is ready
+              setTimeout(() => {
+                navButton.textContent = 'Show Connected View';
+                navButton.disabled = false;
+                
+                // 6. Create a function to show connected UI instead of navigating
+                navButton.onclick = () => {
+                  // Don't navigate - just swap the UI
+                  navButton.textContent = 'Loading connected view...';
+                  navButton.disabled = true;
+                  
+                  // Fetch the connected page content
+                  fetch('/synthesis/connected')
+                    .then(response => response.text())
+                    .then(html => {
+                      // Find the synthesis-connecting container
+                      const connectingContainer = document.querySelector('.synthesis-connecting');
+                      if (connectingContainer) {
+                        // Extract just the main content from the connected page
+                        const tempDiv = document.createElement('div');
+                        tempDiv.innerHTML = html;
+                        
+                        // Find the connected page content
+                        const connectedContent = tempDiv.querySelector('.synthesis-content');
+                        if (connectedContent) {
+                          // Replace the connecting UI with the connected UI
+                          console.log(`[Navigation] Replacing UI with connected view`);
+                          connectingContainer.innerHTML = '';
+                          connectingContainer.appendChild(connectedContent);
+                          
+                          // Update the URL without navigating using history API
+                          const params = new URLSearchParams({
+                            ctrl: ctrlId,
+                            protect: 'ultra',
+                            manual: 'true',
+                            timestamp: Date.now().toString()
+                          });
+                          
+                          // Update the URL but stay on the same page
+                          window.history.pushState(
+                            { 
+                              page: 'connected',
+                              ctrlId,
+                              synthId
+                            }, 
+                            'Connected Synthesizer', 
+                            `/synthesis/connected?${params.toString()}`
+                          );
+                          
+                          // Update page title to match connected page
+                          document.title = 'Connected Synthesizer';
+                          
+                          // Execute any scripts from the connected page
+                          // This is important for any JavaScript in the connected page to run
+                          const scripts = tempDiv.querySelectorAll('script');
+                          scripts.forEach(oldScript => {
+                            const newScript = document.createElement('script');
+                            Array.from(oldScript.attributes).forEach(attr => {
+                              newScript.setAttribute(attr.name, attr.value);
+                            });
+                            newScript.textContent = oldScript.textContent;
+                            document.body.appendChild(newScript);
+                          });
+                          
+                          console.log(`[Navigation] UI swap complete - connection preserved`);
+                        } else {
+                          console.error(`[Navigation] Could not find connected content in fetched page`);
+                        }
+                      }
+                    })
+                    .catch(err => {
+                      console.error(`[Navigation] Error fetching connected page:`, err);
+                      navButton.textContent = 'Error - Try again';
+                      navButton.disabled = false;
+                    });
+                };
+              }, 1000);
+            };
+            
+            navButtonContainer.appendChild(navButton);
+            navButtonContainer.appendChild(statusText);
+            document.body.appendChild(navButtonContainer);
+          }
+        }, 6000); // 6 second stabilization period
     };
     dc.onmessage = e => {
         const message = e.data;
@@ -1327,16 +1486,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&display=swap&text-rendering=optimizeLegibility" rel="stylesheet">
-    <style>
-      /* Ensure Fira Code ligatures work properly */
-      * {
-        font-variant-ligatures: normal;
-        -webkit-font-variant-ligatures: normal;
-        text-rendering: optimizeLegibility;
-      }
-    </style>
 </svelte:head>
+
+<script context="module">
+  // Debug mode can be toggled via localStorage
+  let isDebugMode = false;
+  
+  if (typeof window !== 'undefined') {
+    isDebugMode = localStorage.getItem('debugMode') === 'true';
+  }
+</script>
 
 <div class="synthesis-connecting">
   {#if error}
@@ -1345,7 +1504,7 @@
     </div>
   {/if}
   
-  <!-- Connection UI with debug information -->
+  <!-- Simplified connection UI -->
   <div class="centered-content">
     <div class="connecting-animation"></div>
     <div class="connecting-message">
@@ -1356,70 +1515,170 @@
       {/if}
     </div>
     
-    <!-- Debug information panel -->
-    <div class="debug-panel">
-      <div class="debug-title">Debug Information</div>
-      <div class="debug-item">
-        <span class="debug-label">Status:</span>
-        <span class="debug-value">{statusMessage}</span>
+    <!-- Simplified status message -->
+    <div class="status-message">{statusMessage}</div>
+    
+    {#if dataChannel && dataChannel.readyState === 'open' && connectionTimer > 5}
+      <div class="navigation-container" class:ready={connectionTimer > 6}>
+        <button class="navigation-button" 
+          disabled={connectionTimer < 6} 
+          on:click={() => {
+            // Don't navigate - just swap the UI
+            const button = document.querySelector('.navigation-button') as HTMLButtonElement;
+            button.textContent = 'Loading...';
+            button.disabled = true;
+            
+            // Store critical objects in multiple places for redundancy
+            window.syntheticDataChannel = dataChannel;
+            window.syntheticPeerConnection = peerConnection;
+            window.synthControllerID = targetCtrlId;
+            
+            // Store in global array to prevent garbage collection
+            if (!window._persistConnections) {
+              window._persistConnections = [];
+            }
+            window._persistConnections.push({
+              dc: dataChannel,
+              pc: peerConnection,
+              ctrlId: targetCtrlId,
+              timestamp: Date.now(),
+              synthId
+            });
+            
+            // Fetch the connected page content
+            fetch('/synthesis/connected')
+              .then(response => response.text())
+              .then(html => {
+                // Find the synthesis-connecting container
+                const connectingContainer = document.querySelector('.synthesis-connecting');
+                if (connectingContainer) {
+                  // Extract just the main content from the connected page
+                  const tempDiv = document.createElement('div');
+                  tempDiv.innerHTML = html;
+                  
+                  // Find the connected page content
+                  const connectedContent = tempDiv.querySelector('.synthesis-content');
+                  if (connectedContent) {
+                    // Replace the connecting UI with the connected UI
+                    console.log(`[Navigation] Replacing UI with connected view`);
+                    connectingContainer.innerHTML = '';
+                    connectingContainer.appendChild(connectedContent);
+                    
+                    // Update the URL without navigating using history API
+                    const params = new URLSearchParams({
+                      ctrl: targetCtrlId,
+                      protect: 'ultra',
+                      manual: 'true',
+                      timestamp: Date.now().toString()
+                    });
+                    
+                    // Update the URL but stay on the same page
+                    window.history.pushState(
+                      { 
+                        page: 'connected',
+                        ctrlId: targetCtrlId,
+                        synthId
+                      }, 
+                      'Connected Synthesizer', 
+                      `/synthesis/connected?${params.toString()}`
+                    );
+                    
+                    // Update page title to match connected page
+                    document.title = 'Connected Synthesizer';
+                    
+                    // Execute any scripts from the connected page
+                    const scripts = tempDiv.querySelectorAll('script');
+                    scripts.forEach(oldScript => {
+                      const newScript = document.createElement('script');
+                      Array.from(oldScript.attributes).forEach(attr => {
+                        newScript.setAttribute(attr.name, attr.value);
+                      });
+                      newScript.textContent = oldScript.textContent;
+                      document.body.appendChild(newScript);
+                    });
+                    
+                    console.log(`[Navigation] UI swap complete - connection preserved`);
+                  } else {
+                    console.error(`[Navigation] Could not find connected content in fetched page`);
+                  }
+                }
+              })
+              .catch(err => {
+                console.error(`[Navigation] Error fetching connected page:`, err);
+                const button = document.querySelector('.navigation-button') as HTMLButtonElement;
+                if (button) {
+                  button.textContent = 'Error - Try again';
+                  button.disabled = false;
+                }
+              });
+          }}>
+          Continue to Synthesizer
+        </button>
+        {#if connectionTimer < 6}
+          <div class="stabilizing-message">Connection stabilizing... ({6-connectionTimer}s)</div>
+        {/if}
       </div>
-      {#if peerConnection}
+    {/if}
+    
+    <!-- Optional debug toggle that only shows in the interface -->
+    <button class="debug-toggle" on:click={() => {
+      isDebugMode = !isDebugMode;
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('debugMode', isDebugMode.toString());
+      }
+    }}>
+      {isDebugMode ? 'Hide Debug Info' : 'Show Debug Info'}
+    </button>
+    
+    <!-- Debug information panel (only shown if debug mode is enabled) -->
+    {#if isDebugMode}
+      <div class="debug-panel">
+        <div class="debug-title">Debug Information</div>
         <div class="debug-item">
-          <span class="debug-label">ICE State:</span>
-          <span class="debug-value">{peerConnection.iceConnectionState}</span>
+          <span class="debug-label">Status:</span>
+          <span class="debug-value">{statusMessage}</span>
         </div>
-        <div class="debug-item">
-          <span class="debug-label">Connection State:</span>
-          <span class="debug-value">{peerConnection.connectionState}</span>
-        </div>
-        <div class="debug-item">
-          <span class="debug-label">Signaling State:</span>
-          <span class="debug-value">{peerConnection.signalingState}</span>
-        </div>
-      {/if}
-      {#if dataChannel}
-        <div class="debug-item">
-          <span class="debug-label">DataChannel:</span>
-          <span class="debug-value">{dataChannel.readyState}</span>
-        </div>
-        {#if dataChannel.readyState === 'open' && connectionTimer > 0}
+        {#if peerConnection}
           <div class="debug-item">
-            <span class="debug-label">Connection Time:</span>
-            <span class="debug-value">{connectionTimer} seconds</span>
+            <span class="debug-label">ICE State:</span>
+            <span class="debug-value">{peerConnection.iceConnectionState}</span>
+          </div>
+          <div class="debug-item">
+            <span class="debug-label">Connection State:</span>
+            <span class="debug-value">{peerConnection.connectionState}</span>
           </div>
         {/if}
-      {/if}
-      <div class="debug-item">
-        <span class="debug-label">Synth ID:</span>
-        <span class="debug-value">{synthId || 'Not generated'}</span>
-      </div>
-      <div class="debug-item">
-        <span class="debug-label">Controller ID:</span>
-        <span class="debug-value">{targetCtrlId || 'Not connected'}</span>
-      </div>
-      {#if reconnecting}
-        <div class="debug-item">
-          <span class="debug-label">Reconnect Attempts:</span>
-          <span class="debug-value">{reconnectAttempts}</span>
+        {#if dataChannel}
+          <div class="debug-item">
+            <span class="debug-label">DataChannel:</span>
+            <span class="debug-value">{dataChannel.readyState}</span>
+          </div>
+          {#if dataChannel.readyState === 'open' && connectionTimer > 0}
+            <div class="debug-item">
+              <span class="debug-label">Connection Time:</span>
+              <span class="debug-value">{connectionTimer} seconds</span>
+            </div>
+          {/if}
+        {/if}
+        
+        <!-- Debug actions -->
+        <div class="debug-actions">
+          <button class="debug-button view-logs" on:click={() => logger.displayLogUI()}>
+            View Logs
+          </button>
+          <button class="debug-button save-logs" on:click={() => logger.saveToFile('connection-debug')}>
+            Save Logs
+          </button>
         </div>
-      {/if}
-      
-      <!-- Debug actions -->
-      <div class="debug-actions">
-        <button class="debug-button view-logs" on:click={() => logger.displayLogUI()}>
-          View Logs
-        </button>
-        <button class="debug-button save-logs" on:click={() => logger.saveToFile('connection-debug')}>
-          Save Logs
-        </button>
       </div>
-    </div>
+    {/if}
     
     <!-- Instructions at bottom -->
-    <div class="instructions">
-      {wakeLockSupported ? 'Screen will stay awake while connecting.' : 'Keep app in foreground to maintain connection.'}
-      <br>Debug mode enabled - navigation disabled for logging
-    </div>
+    {#if !dataChannel || dataChannel.readyState !== 'open'}
+      <div class="instructions">
+        {wakeLockSupported ? 'Screen will stay awake while connecting.' : 'Keep app in foreground to maintain connection.'}
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -1431,7 +1690,7 @@
     padding: 16px;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    align-items: center;
     margin: 0 auto;
   }
   
@@ -1440,14 +1699,14 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    background: var(--color-error-900, rgba(80, 20, 20, 0.7));
-    color: var(--color-error-300, rgba(255, 150, 150, 0.95));
+    background: rgba(80, 20, 20, 0.7);
+    color: rgba(255, 150, 150, 0.95);
     padding: 12px 16px;
     border-radius: 4px;
     font-weight: bold;
     max-width: 100%;
-    overflow-wrap: break-word;
-    font-size: 0.95rem;
+    margin-bottom: 16px;
+    width: 100%;
   }
   
   /* Centered content */
@@ -1458,7 +1717,8 @@
     justify-content: center;
     gap: 24px;
     padding: 32px 16px;
-    margin-top: 40px;
+    margin-top: 20px;
+    width: 100%;
   }
   
   /* Connecting animation */
@@ -1478,25 +1738,85 @@
     text-align: center;
   }
   
+  .status-message {
+    font-size: 0.9rem;
+    color: rgba(150, 180, 220, 0.8);
+    text-align: center;
+    max-width: 300px;
+  }
+  
+  .navigation-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-top: 20px;
+    opacity: 0.7;
+    transition: opacity 0.3s ease;
+  }
+  
+  .navigation-container.ready {
+    opacity: 1;
+  }
+  
+  .navigation-button {
+    padding: 12px 24px;
+    background: rgba(40, 180, 100, 0.9);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: bold;
+    transition: all 0.2s ease;
+  }
+  
+  .navigation-button:disabled {
+    background: rgba(40, 180, 100, 0.4);
+    cursor: wait;
+  }
+  
+  .navigation-button:not(:disabled):hover {
+    background: rgba(50, 200, 120, 1);
+    transform: translateY(-2px);
+  }
+  
+  .stabilizing-message {
+    font-size: 0.8rem;
+    color: rgba(150, 180, 220, 0.7);
+    margin-top: 8px;
+  }
+  
   /* Instructions */
   .instructions {
     text-align: center;
-    color: var(--color-tertiary-400, rgba(150, 180, 200, 0.6));
+    color: rgba(150, 180, 200, 0.6);
     font-size: 0.85rem;
     padding: 16px 0;
-    margin-top: 24px;
+    margin-top: 16px;
   }
   
-  /* Debug panel styling */
+  /* Debug toggle */
+  .debug-toggle {
+    background: transparent;
+    border: 1px solid rgba(100, 150, 180, 0.3);
+    color: rgba(100, 150, 180, 0.5);
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    margin-top: 20px;
+    cursor: pointer;
+  }
+  
+  /* Debug panel styling (only shown when debug mode is on) */
   .debug-panel {
     background: rgba(40, 50, 60, 0.7);
     border: 1px solid rgba(70, 100, 130, 0.4);
     border-radius: 8px;
     padding: 16px;
-    margin-top: 24px;
+    margin-top: 16px;
     max-width: 500px;
     width: 100%;
-    font-family: 'Courier New', monospace;
+    font-family: monospace;
     font-size: 0.85rem;
   }
   
@@ -1545,44 +1865,11 @@
     padding: 8px 16px;
     font-size: 0.85rem;
     cursor: pointer;
-    transition: all 0.2s ease;
-  }
-  
-  .debug-button:hover {
-    background: rgba(50, 90, 120, 0.7);
-    border-color: rgba(100, 180, 220, 0.5);
-  }
-  
-  .debug-button.view-logs {
-    background: rgba(40, 70, 90, 0.6);
-  }
-  
-  .debug-button.save-logs {
-    background: rgba(40, 90, 70, 0.6);
   }
   
   /* Animations */
   @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
-  
-  @keyframes pulse {
-    0% {
-      opacity: 0.6;
-      transform: scale(0.95);
-    }
-    50% {
-      opacity: 1;
-      transform: scale(1.05);
-    }
-    100% {
-      opacity: 0.6;
-      transform: scale(0.95);
-    }
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
   }
 </style>

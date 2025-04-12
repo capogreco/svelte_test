@@ -261,6 +261,11 @@
   let initialLatencyMeasured = false;
   let connectionStabilizing = false;
   
+  // Check if this was a manual navigation
+  // We'll trust manual navigation more than automatic navigation
+  const isManualNavigation = browser && 
+                             sessionStorage.getItem('manualNavigation') === 'true';
+  
   // Process pong response for both latency and connection verification
   const handlePong = (pingTimestamp: number) => {
     const roundTripTime = Date.now() - pingTimestamp;
@@ -279,97 +284,106 @@
     // Mark that we've measured initial latency - only happens once
     if (!initialLatencyMeasured && !connectionStabilizing) {
       initialLatencyMeasured = true;
-      connectionStabilizing = true;
       
-      // **** CRITICAL FIX ****
-      // We've observed the data channel closing immediately after the first latency measurement
-      // Complete overhaul of the protection mechanism:
-      // 1. Instead of nulling the objects (which could cause GC issues),
-      //    we'll create a protective wrapper that intercepts and blocks all operations
-      // 2. We'll extend the stabilization period significantly
-      // 3. We'll add an emergency detection system that forces keeping connections open
-      console.log(`[Connected] First latency measurement: ${roundTripTime}ms - stabilizing connection`);
-      
-      // *** NEW APPROACH: PROTECTIVE WRAPPER ***
-      // Rather than nulling the dataChannel (which could cause it to be GC'd),
-      // we'll create protective wrappers that intercept any operations during stabilization
-      
-      // Store real reference to dataChannel
-      const realDataChannel = dataChannel;
-      
-      // Create a safety wrapper for the data channel that will prevent it from being closed
-      const dataChannelWrapper = {
-        // Forward safe properties directly
-        get readyState() { return realDataChannel?.readyState || 'open'; },
-        get bufferedAmount() { return realDataChannel?.bufferedAmount || 0; },
-        get bufferedAmountLowThreshold() { return realDataChannel?.bufferedAmountLowThreshold || 0; },
-        get maxPacketLifeTime() { return realDataChannel?.maxPacketLifeTime; },
-        get maxRetransmits() { return realDataChannel?.maxRetransmits; },
-        get negotiated() { return realDataChannel?.negotiated; },
-        get id() { return realDataChannel?.id; },
-        get ordered() { return realDataChannel?.ordered; },
-        get protocol() { return realDataChannel?.protocol; },
-        get label() { return realDataChannel?.label; },
-        // These methods are safe to call during stabilization
-        send: (data) => {
-          try {
-            if (realDataChannel && realDataChannel.readyState === 'open') {
-              return realDataChannel.send(data);
-            }
-            console.log(`[Protected DC] Blocked send during stabilization`);
-          } catch (e) {
-            console.warn(`[Protected DC] Error in protected send:`, e);
-          }
-        },
-        // Block potentially unsafe operations during stabilization
-        close: () => {
-          console.log(`[Protected DC] Blocked close attempt during stabilization`);
-          // Don't actually close the channel during stabilization
-          return;
-        }
-      };
-      
-      // Replace the dataChannel with our protected wrapper
-      dataChannel = dataChannelWrapper as any;
-      
-      // Pause any monitoring that might trigger disconnects
-      const oldPingInterval = pingInterval;
-      if (pingInterval) {
-        window.clearInterval(pingInterval);
-        pingInterval = null;
-        console.log(`[Connected] Temporarily disabled ping interval`);
-      }
-      
-      // After a safe period, restore monitoring with a gentler approach
-      const resumeMonitoringAfter = 8000; // Increased to 8 seconds (from 5)
-      setTimeout(() => {
-        console.log(`[Connected] Connection stabilization period complete`);
-        connectionStabilizing = false;
+      // Skip the stabilization process if this was a manual navigation
+      // We trust that the connection is already stable if user manually navigated
+      if (isManualNavigation) {
+        console.log(`[Connected] Manual navigation detected - skipping stabilization period`);
+        console.log(`[Connected] First latency measurement: ${roundTripTime}ms - connection seems stable`);
+      } else {
+        // Only enter stabilization mode for automatic navigation
+        connectionStabilizing = true;
         
-        // Restore the real data channel
-        if (realDataChannel && realDataChannel.readyState === 'open') {
-          console.log(`[Connected] Real data channel is still open, restoring normal operation`);
-          dataChannel = realDataChannel;
-          
-          // Restart ping interval with a new ID, but with gentler checking
-          pingInterval = window.setInterval(() => {
-            // Only send pings if connection is definitely open
-            if (dataChannel && dataChannel.readyState === 'open') {
-              try {
-                sendPing();
-              } catch (e) {
-                console.warn(`[Connected] Error in ping after stabilization:`, e);
+        // **** CRITICAL FIX ****
+        // We've observed the data channel closing immediately after the first latency measurement
+        // Complete overhaul of the protection mechanism:
+        // 1. Instead of nulling the objects (which could cause GC issues),
+        //    we'll create a protective wrapper that intercepts and blocks all operations
+        // 2. We'll extend the stabilization period significantly
+        // 3. We'll add an emergency detection system that forces keeping connections open
+        console.log(`[Connected] First latency measurement: ${roundTripTime}ms - stabilizing connection`);
+        
+        // *** NEW APPROACH: PROTECTIVE WRAPPER ***
+        // Rather than nulling the dataChannel (which could cause it to be GC'd),
+        // we'll create protective wrappers that intercept any operations during stabilization
+        
+        // Store real reference to dataChannel
+        const realDataChannel = dataChannel;
+        
+        // Create a safety wrapper for the data channel that will prevent it from being closed
+        const dataChannelWrapper = {
+          // Forward safe properties directly
+          get readyState() { return realDataChannel?.readyState || 'open'; },
+          get bufferedAmount() { return realDataChannel?.bufferedAmount || 0; },
+          get bufferedAmountLowThreshold() { return realDataChannel?.bufferedAmountLowThreshold || 0; },
+          get maxPacketLifeTime() { return realDataChannel?.maxPacketLifeTime; },
+          get maxRetransmits() { return realDataChannel?.maxRetransmits; },
+          get negotiated() { return realDataChannel?.negotiated; },
+          get id() { return realDataChannel?.id; },
+          get ordered() { return realDataChannel?.ordered; },
+          get protocol() { return realDataChannel?.protocol; },
+          get label() { return realDataChannel?.label; },
+          // These methods are safe to call during stabilization
+          send: (data) => {
+            try {
+              if (realDataChannel && realDataChannel.readyState === 'open') {
+                return realDataChannel.send(data);
               }
+              console.log(`[Protected DC] Blocked send during stabilization`);
+            } catch (e) {
+              console.warn(`[Protected DC] Error in protected send:`, e);
             }
-          }, CONNECTION_PING_INTERVAL);
-          
-          console.log(`[Connected] Restored normal connection monitoring`);
-        } else {
-          console.warn(`[Connected] Data channel closed during stabilization period`);
-          // Don't restore monitoring - connection is already closed
-          // Let normal reconnection mechanisms handle this
+          },
+          // Block potentially unsafe operations during stabilization
+          close: () => {
+            console.log(`[Protected DC] Blocked close attempt during stabilization`);
+            // Don't actually close the channel during stabilization
+            return;
+          }
+        };
+        
+        // Replace the dataChannel with our protected wrapper
+        dataChannel = dataChannelWrapper as any;
+        
+        // Pause any monitoring that might trigger disconnects
+        const oldPingInterval = pingInterval;
+        if (pingInterval) {
+          window.clearInterval(pingInterval);
+          pingInterval = null;
+          console.log(`[Connected] Temporarily disabled ping interval`);
         }
-      }, resumeMonitoringAfter);
+        
+        // After a safe period, restore monitoring with a gentler approach
+        const resumeMonitoringAfter = 8000; // Increased to 8 seconds (from 5)
+        setTimeout(() => {
+          console.log(`[Connected] Connection stabilization period complete`);
+          connectionStabilizing = false;
+          
+          // Restore the real data channel
+          if (realDataChannel && realDataChannel.readyState === 'open') {
+            console.log(`[Connected] Real data channel is still open, restoring normal operation`);
+            dataChannel = realDataChannel;
+            
+            // Restart ping interval with a new ID, but with gentler checking
+            pingInterval = window.setInterval(() => {
+              // Only send pings if connection is definitely open
+              if (dataChannel && dataChannel.readyState === 'open') {
+                try {
+                  sendPing();
+                } catch (e) {
+                  console.warn(`[Connected] Error in ping after stabilization:`, e);
+                }
+              }
+            }, CONNECTION_PING_INTERVAL);
+            
+            console.log(`[Connected] Restored normal connection monitoring`);
+          } else {
+            console.warn(`[Connected] Data channel closed during stabilization period`);
+            // Don't restore monitoring - connection is already closed
+            // Let normal reconnection mechanisms handle this
+          }
+        }, resumeMonitoringAfter);
+      }
     } else if (connectionStabilizing) {
       // During stabilization period, just log without taking action
       console.log(`[Connected] Latency during stabilization: ${roundTripTime}ms`);
@@ -602,6 +616,7 @@
       const ctrlParam = urlParams.get('ctrl');
       const attemptParam = urlParams.get('attempt');
       const rescueParam = urlParams.get('rescue');
+      const manualParam = urlParams.get('manual');
       
       // If this was a rescue navigation, log that for debugging
       if (rescueParam) {
@@ -611,6 +626,15 @@
       // Log navigation attempt number if present
       if (attemptParam) {
         console.log(`[Connected] This is navigation attempt #${attemptParam}`);
+      }
+      
+      // If this was a manual navigation, give it special handling
+      if (manualParam === 'true') {
+        console.log(`[Connected] This is a manual navigation - connection should be stable`);
+        // For manual navigation, we'll be more confident in the connection stability
+        // and skip some of the aggressive recovery mechanisms
+        initialLatencyMeasured = true; // Skip the initial stabilization period
+        sessionStorage.setItem('manualNavigation', 'true');
       }
       
       // If no connection ID, try multiple fallbacks before redirecting
@@ -642,21 +666,90 @@
       // Get navigation attempts from session storage
       const navigationAttempts = parseInt(sessionStorage.getItem('navigationAttempts') || '0');
       
-      // Try to recover connection from previous page
-      const recoveryResult = recoverConnectionAfterNavigation();
+      console.log(`[Connected] Attempting enhanced WebRTC object recovery`);
       
-      if (recoveryResult.success) {
+      // First try: direct window access (highest priority)
+      const directPcFromWindow = window.syntheticPeerConnection || window.protectedPC;
+      const directDcFromWindow = window.syntheticDataChannel || window.protectedDC;
+      
+      // Second try: check persistent connections array
+      let persistedPc = null;
+      let persistedDc = null;
+      let persistedId = null;
+      
+      if ((!directPcFromWindow || !directDcFromWindow) && 
+          window._persistConnections && 
+          window._persistConnections.length > 0) {
+        console.log(`[Connected] Checking persistent connections array (size: ${window._persistConnections.length})`);
+        
+        // Get the most recent connection
+        const persistedConn = window._persistConnections[window._persistConnections.length - 1];
+        if (persistedConn) {
+          persistedPc = persistedConn.pc;
+          persistedDc = persistedConn.dc;
+          persistedId = persistedConn.ctrlId;
+          console.log(`[Connected] Found connection in persistent array with ID: ${persistedId}`);
+        }
+      }
+      
+      // Third try: standard recovery mechanism
+      const recoveryResult = recoverConnectionAfterNavigation();
+      let recoveredPC = recoveryResult.peerConnection;
+      let recoveredDC = recoveryResult.dataChannel;
+      let recoveredId = recoveryResult.connectionId;
+      
+      // Use the best available object from any source, in priority order
+      peerConnection = directPcFromWindow || persistedPc || recoveredPC;
+      dataChannel = directDcFromWindow || persistedDc || recoveredDC; 
+      connectionId = connectionId || persistedId || recoveredId;
+      
+      // Check if we have valid WebRTC objects
+      const recoverySuccess = !!(peerConnection && dataChannel && connectionId);
+      
+      if (recoverySuccess) {
         // We successfully recovered the objects!
         console.log(`[Connected] ✅ Successfully recovered WebRTC objects`);
+        console.log(`[Connected] PC state: ${peerConnection.connectionState}, DC state: ${dataChannel.readyState}`);
         
-        // Set the recovered objects to our local variables
-        peerConnection = recoveryResult.peerConnection;
-        dataChannel = recoveryResult.dataChannel;
-        connectionId = recoveryResult.connectionId || connectionId;
+        // Log connection info for debugging
+        try {
+          console.log(`[Connected] Recovered connection details:`, {
+            pcState: peerConnection.connectionState,
+            pcIceState: peerConnection.iceConnectionState,
+            dcState: dataChannel.readyState,
+            dcId: dataChannel.id,
+            ctrlId: connectionId
+          });
+        } catch (e) {
+          console.warn(`[Connected] Error logging connection details:`, e);
+        }
         
-        // Apply continued protection and setup heartbeat
-        protectDataChannel(dataChannel, connectionId);
-        protectPeerConnection(peerConnection, connectionId);
+        // Apply continued protection but with gentler approach for manual navigation
+        if (manualParam === 'true' || sessionStorage.getItem('manualNavigation') === 'true') {
+          console.log(`[Connected] Using gentler protection for manual navigation`);
+          
+          // Don't modify existing event handlers for manual navigation
+          // Just block the close method
+          
+          // Create safer close methods without disabling handlers
+          const originalDcClose = dataChannel.close;
+          dataChannel.close = function() {
+            console.log(`[Protected DC] Blocked close attempt after manual navigation`);
+            return;
+          };
+          
+          const originalPcClose = peerConnection.close;
+          peerConnection.close = function() {
+            console.log(`[Protected PC] Blocked close attempt after manual navigation`);
+            return;
+          };
+        } else {
+          // For automatic navigation, use standard protection
+          protectDataChannel(dataChannel, connectionId);
+          protectPeerConnection(peerConnection, connectionId);
+        }
+        
+        // Setup heartbeat for all navigation types
         const heartbeatIntervals = createHeartbeatMechanism(dataChannel, connectionId);
         
         // Set a success message
@@ -1117,112 +1210,223 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&display=swap&text-rendering=optimizeLegibility" rel="stylesheet">
-  <style>
-    /* Ensure Fira Code ligatures work properly */
-    * {
-      font-variant-ligatures: normal;
-      -webkit-font-variant-ligatures: normal;
-      text-rendering: optimizeLegibility;
-    }
-  </style>
 </svelte:head>
+
+<script context="module">
+  // Debug mode can be toggled via localStorage
+  let isDebugMode = false;
+  
+  if (typeof window !== 'undefined') {
+    isDebugMode = localStorage.getItem('debugMode') === 'true';
+  }
+</script>
 
 <div class="synthesis-content">
   {#if audioCtx && audioState !== 'running'}
-    <div class="audio-controls">
-      <button 
-        class="audio-resume-button"
-        on:click={resumeAudioContext}
-      >
-        ACTIVATE AUDIO
-      </button>
-    </div>
+    <button class="audio-resume-button" on:click={resumeAudioContext}>
+      ACTIVATE AUDIO
+    </button>
   {/if}
   
-  <!-- Minimal status display, most info is in the header -->
+  <!-- Ultra-minimal connected UI -->
   <div class="connected-display">
-    <div class="connected-icon">✓</div>
-    <div class="connected-message">SYNTHESIS CONNECTED</div>
-    <div class="connected-status">READY FOR CONTROLLER COMMANDS</div>
+    <div class="status-icon">
+      {#if dataChannel && dataChannel.readyState === 'open'}
+        <span class="connected">✓</span>
+      {:else}
+        <span class="disconnected">!</span>
+      {/if}
+    </div>
+    
+    <h1 class="status-title">
+      {#if dataChannel && dataChannel.readyState === 'open'}
+        Connected
+      {:else}
+        Connection Lost
+      {/if}
+    </h1>
+    
+    <div class="status-message">
+      {#if dataChannel && dataChannel.readyState === 'open'}
+        Ready for controller commands
+      {:else}
+        Please reconnect
+      {/if}
+    </div>
+    
+    {#if !dataChannel || dataChannel.readyState !== 'open'}
+      <button class="reconnect-button" on:click={reconnect}>
+        Reconnect
+      </button>
+    {/if}
   </div>
+  
+  <!-- Debug toggle button -->
+  <button class="debug-toggle" on:click={() => {
+    isDebugMode = !isDebugMode;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('debugMode', isDebugMode.toString());
+    }
+  }}>
+    {isDebugMode ? 'Hide Debug Info' : 'Show Debug Info'}
+  </button>
+  
+  <!-- Debug panel (only shown when debug mode is enabled) -->
+  {#if isDebugMode}
+    <div class="debug-panel">
+      <div class="debug-title">Connection Details</div>
+      <div class="debug-item">
+        <span class="debug-label">Status:</span>
+        <span class="debug-value">{statusMessage}</span>
+      </div>
+      <div class="debug-item">
+        <span class="debug-label">Data Channel:</span>
+        <span class="debug-value">{dataChannel?.readyState || 'None'}</span>
+      </div>
+      <div class="debug-item">
+        <span class="debug-label">Latency:</span>
+        <span class="debug-value">{latency}ms</span>
+      </div>
+      <div class="debug-item">
+        <span class="debug-label">Controller ID:</span>
+        <span class="debug-value">{connectionId || 'None'}</span>
+      </div>
+      <div class="debug-item">
+        <span class="debug-label">Synth ID:</span>
+        <span class="debug-value">{synthId || 'None'}</span>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
-  /* Synthesis content container */
   .synthesis-content {
     width: 100%;
-    padding: 16px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
     align-items: center;
+    justify-content: center;
+    padding: 40px 16px;
+    min-height: 60vh;
+    max-width: 600px;
+    margin: 0 auto;
+    gap: 20px;
   }
-  
-  /* Audio controls */
-  .audio-controls {
-    padding: 16px;
-    margin-bottom: 16px;
-    text-align: center;
-  }
-  
+
   .audio-resume-button {
-    padding: 12px 16px;
-    background-color: rgba(80, 70, 180, 0.3);
-    color: rgba(180, 170, 240, 0.95);
-    border: 1px solid rgba(100, 90, 200, 0.3);
+    padding: 12px 20px;
+    background-color: rgba(80, 70, 180, 0.5);
+    color: white;
+    border: none;
     border-radius: 4px;
-    font-family: 'Fira Code', monospace;
     font-size: 0.9rem;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.2s ease;
-    text-align: center;
+    margin-bottom: 20px;
   }
-  
-  .audio-resume-button:hover, .audio-resume-button:focus {
-    background-color: rgba(90, 80, 200, 0.4);
-    border-color: rgba(120, 110, 220, 0.4);
-  }
-  
-  /* Connected display */
+
   .connected-display {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 16px;
-    margin-top: 40px;
-    padding: 32px;
     text-align: center;
+    gap: 16px;
+    margin-bottom: 20px;
   }
-  
-  .connected-icon {
-    font-size: 64px;
-    color: rgba(100, 240, 160, 0.95);
-    background: rgba(80, 220, 120, 0.2);
+
+  .status-icon {
+    font-size: 48px;
+    height: 100px;
+    width: 100px;
     border-radius: 50%;
-    width: 120px;
-    height: 120px;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 16px;
-    border: 2px solid rgba(100, 240, 160, 0.3);
+    background: rgba(40, 50, 60, 0.2);
+    margin-bottom: 8px;
   }
-  
-  .connected-message {
-    font-size: 1.3rem;
-    font-weight: 600;
+
+  .status-icon .connected {
+    color: rgba(80, 220, 120, 1);
+  }
+
+  .status-icon .disconnected {
+    color: rgba(220, 80, 80, 1);
+  }
+
+  .status-title {
+    font-size: 1.5rem;
+    margin: 0;
+    font-weight: 500;
     color: rgba(180, 240, 200, 0.95);
-    font-family: 'Fira Code', monospace;
-    letter-spacing: 1px;
   }
   
-  .connected-status {
+  .status-message {
     font-size: 0.9rem;
     color: rgba(150, 180, 220, 0.9);
-    margin-top: 8px;
-    font-family: 'Fira Code', monospace;
+  }
+
+  .reconnect-button {
+    padding: 12px 20px;
+    background-color: rgba(220, 80, 80, 0.8);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    margin-top: 20px;
+  }
+  
+  /* Debug toggle */
+  .debug-toggle {
+    background: transparent;
+    border: 1px solid rgba(100, 150, 180, 0.3);
+    color: rgba(100, 150, 180, 0.5);
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    border-radius: 4px;
+    margin-top: 20px;
+    cursor: pointer;
+  }
+  
+  /* Debug panel */
+  .debug-panel {
+    background: rgba(40, 50, 60, 0.7);
+    border: 1px solid rgba(70, 100, 130, 0.4);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 16px;
+    max-width: 500px;
+    width: 100%;
+    font-family: monospace;
+    font-size: 0.85rem;
+  }
+  
+  .debug-title {
+    color: rgba(180, 200, 220, 0.9);
+    font-size: 1rem;
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 12px;
+    border-bottom: 1px solid rgba(70, 100, 130, 0.4);
+    padding-bottom: 8px;
+  }
+  
+  .debug-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px dotted rgba(70, 100, 130, 0.2);
+  }
+  
+  .debug-label {
+    color: rgba(150, 180, 200, 0.8);
+    font-weight: bold;
+    padding-right: 12px;
+  }
+  
+  .debug-value {
+    color: rgba(180, 240, 200, 0.95);
+    word-break: break-all;
   }
 </style>

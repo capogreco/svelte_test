@@ -38,13 +38,17 @@ export function protectDataChannel(dataChannel: RTCDataChannel, id: string = 'un
     }
   };
   
-  // Disable all event handlers
+  // Store original event handlers rather than disabling them
+  const originalHandlers: Record<string, any> = {};
   ['onclose', 'onerror', 'onopen', 'onmessage', 'bufferedamountlow'].forEach(event => {
-    if (dataChannel[event]) {
-      console.log(`[Protected DC ${id}] Disabling ${event} handler`);
-      dataChannel[event] = null;
+    if ((dataChannel as any)[event]) {
+      console.log(`[Protected DC ${id}] Saving ${event} handler`);
+      originalHandlers[event] = (dataChannel as any)[event];
     }
   });
+  
+  // Store the original handlers on the object for later recovery
+  (dataChannel as any)._originalHandlers = originalHandlers;
   
   console.log(`[Protected DC ${id}] ✅ Data channel protected`);
   return dataChannel;
@@ -68,18 +72,22 @@ export function protectPeerConnection(peerConnection: RTCPeerConnection, id: str
     return Promise.resolve() as any;
   };
   
-  // Disable critical event handlers
+  // Store original event handlers rather than disabling them
+  const originalHandlers: Record<string, any> = {};
   [
     'onconnectionstatechange', 
     'oniceconnectionstatechange',
     'onicegatheringstatechange', 
     'onnegotiationneeded'
   ].forEach(event => {
-    if (peerConnection[event]) {
-      console.log(`[Protected PC ${id}] Disabling ${event} handler`);
-      peerConnection[event] = null;
+    if ((peerConnection as any)[event]) {
+      console.log(`[Protected PC ${id}] Saving ${event} handler`);
+      originalHandlers[event] = (peerConnection as any)[event];
     }
   });
+  
+  // Store the original handlers on the object for later recovery
+  (peerConnection as any)._originalHandlers = originalHandlers;
   
   console.log(`[Protected PC ${id}] ✅ Peer connection protected`);
   return peerConnection;
@@ -224,5 +232,14 @@ declare global {
     globalDCGuardianInstalled?: boolean;
     globalDCGuardianInterval?: number;
     recentlyOpenedChannels?: Record<string, any>;
+    _persistConnections?: Array<{
+      dc: RTCDataChannel;
+      pc: RTCPeerConnection;
+      ctrlId: string;
+      timestamp: number;
+      synthId: string;
+    }>;
+    protectedDC?: RTCDataChannel;
+    protectedPC?: RTCPeerConnection;
   }
 }
