@@ -4,6 +4,7 @@
   import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
   import { onMount, onDestroy } from 'svelte';
+  import { activeControllerId } from '$lib/stores/controllerStore';
 
   // --- Interfaces ---
   interface IceSvr {
@@ -20,8 +21,37 @@
   // --- Props and Reactive Statements ---
   export let data: PgData;
   let error: string | Error | null = null;
+  let currentTime = new Date().toISOString();
+  let lastBroadcastTime: number | null = null;
+  let signalActive = false;
+  let signalTimeout: number;
   $: ({ iceServers, error = null } = data);
   $: if (browser && !$user) goto('/ctrl');
+  
+  // Update timestamp regularly
+  let timeInterval: number;
+  onMount(() => {
+    if (browser) {
+      timeInterval = window.setInterval(() => {
+        currentTime = new Date().toISOString();
+        
+        // Check if signal should be active based on last broadcast time
+        if (lastBroadcastTime) {
+          const timeSinceBroadcast = Date.now() - lastBroadcastTime;
+          signalActive = timeSinceBroadcast < 2000; // Active for 2 seconds after broadcast
+        }
+      }, 1000);
+    }
+  });
+  
+  onDestroy(() => {
+    if (browser && timeInterval) {
+      clearInterval(timeInterval);
+    }
+    if (browser && signalTimeout) {
+      clearTimeout(signalTimeout);
+    }
+  });
 
   // --- State Management ---
   let connectionStates = new Map<string, {
@@ -215,6 +245,19 @@ const announcePresence = async (currentCtrlId: string) => {
   const broadcastMessage = (message: string) => {
     console.log(`[broadcastMessage] Attempting to send: "${message}"`);
     let sentCount = 0;
+    
+    // Set the last broadcast time
+    lastBroadcastTime = Date.now();
+    signalActive = true;
+    
+    // Activate signal indicator
+    if (browser && signalTimeout) {
+      clearTimeout(signalTimeout);
+    }
+    signalTimeout = window.setTimeout(() => {
+      signalActive = false;
+    }, 2000);
+    
     connectionStates.forEach((state, synthId) => {
       if (state.dc && state.dc.readyState === 'open') {
         try {
@@ -225,7 +268,8 @@ const announcePresence = async (currentCtrlId: string) => {
         }
       }
     });
-     console.log(`[broadcastMessage] Sent to ${sentCount} / ${connectionStates.size} connected clients.`);
+    
+    console.log(`[broadcastMessage] Sent to ${sentCount} / ${connectionStates.size} connected clients.`);
   };
 
   const handleBodyClick = () => {
@@ -253,6 +297,9 @@ const announcePresence = async (currentCtrlId: string) => {
         return null;
     }
     console.log(`[initController] Controller ID: ${ctrlId}`);
+    
+    // Update the store with the controller ID for the layout to use
+    activeControllerId.set(ctrlId);
 
     await announcePresence(ctrlId);
 
@@ -304,6 +351,9 @@ const announcePresence = async (currentCtrlId: string) => {
 
         remove(controllerRef).catch(e => console.error("[cleanup] Error removing active controller entry:", e));
         remove(synthOffersRef).catch(e => console.error("[cleanup] Error removing synth offers node:", e));
+        
+        // Reset the controller ID in the store
+        activeControllerId.set(null);
     } else {
         console.log("[cleanup] No controller ID, skipping DB removal.");
     }
@@ -337,61 +387,464 @@ const announcePresence = async (currentCtrlId: string) => {
     <title>Active Controller</title>
 </svelte:head>
 
-<div class="container mx-auto p-4">
-    <h1 class="text-3xl font-bold underline mb-4">ACTIVE Controller</h1>
-    {#if ctrlId}
-        <p class="text-sm text-gray-400 mb-4">Controller ID: 
-          <span class="font-mono">{ctrlId}</span>
-        </p>
-    {:else if !error}
-        <p class="preset-outline-warning">Initializing controller...</p>
-    {/if}
-
+<div class="h-screen w-screen flex flex-col justify-between p-0">
+  <!-- Floating glass-style main UI panel -->
+  <div class="main-ui-panel">
+    
     {#if error}
-      <p class="p-3 rounded mb-4 preset-tonal-error">Error: {error}</p>
+      <div class="error-message">
+        <span>ERROR: {error}</span>
+      </div>
     {/if}
+    
+    <div class="spacer"></div>
 
-    <div class="my-4">
-      <h2 class="text-xl font-semibold">
-        Connection Status ({connectionStates.size} clients)
-      </h2>
-      {#if connectionStates.size === 0}
-        <p class="preset-tonal-warning mt-2">
-          ... waiting for synthesis clients to connect.
-        </p>
-      {:else}
-        <ul class="list-none mt-2 space-y-2">
-           {#each Array.from(connectionStates.entries()) as [synthId, state] (synthId)}
-            <li class="p-3 border rounded shadow-sm {
-              state.connectionState === 'connected' && state.dataChannelState === 'open' 
-              ? 'preset-tonal-success' 
-              : 'preset-tonal-error'
-            }">
-              <strong class="block mb-1">Synth ID:</strong> 
-              <span class="font-mono text-xs break-all">{synthId}</span> 
-              <br/>
-              <div class="grid grid-cols-3 gap-2 mt-1 text-sm">
-                  <span>
-                    <strong>Conn:</strong> 
-                    <span class="font-mono">{state.connectionState}</span>
-                  </span>
-                  <span>
-                    <strong>ICE:</strong> 
-                    <span class="font-mono">{state.iceConnectionState}</span>
-                  </span>
-                  <span>
-                    <strong>Data:</strong>
-                    <span class="font-mono">{state.dataChannelState}</span>
-                  </span>
-              </div>
-            </li>
-          {/each}
-        </ul>
+    <!-- Unified bottom control panel -->
+    <div class="bottom-controls">
+      <!-- Left side - Controller ID -->
+      <div class="control-section">
+        {#if ctrlId}
+          <div class="terminal-item id-item">
+            <span class="item-label">ID:</span>
+            <span class="item-value">{ctrlId}</span>
+          </div>
+        {:else}
+          <div class="terminal-item initializing">
+            <span>INITIALIZING...</span>
+          </div>
+        {/if}
+      </div>
+      
+      <!-- Center - Connection counts -->
+      <div class="control-section counts-section">
+        {#if true}
+          {@const activeConnections = Array.from(connectionStates.values()).filter(state => 
+              state.connectionState === 'connected' && state.dataChannelState === 'open'
+            ).length}
+          {@const pendingConnections = Array.from(connectionStates.values()).filter(state => 
+              state.connectionState !== 'connected' || state.dataChannelState !== 'open'
+            ).length}
+            
+          <div class="terminal-item">
+            <span class="item-label">ACTIVE:</span>
+            <span class="item-value">{activeConnections}</span>
+          </div>
+          
+          {#if pendingConnections > 0}
+            <div class="terminal-item">
+              <span class="item-label">PENDING:</span>
+              <span class="item-value">{pendingConnections}</span>
+            </div>
+          {/if}
+        {/if}
+      </div>
+      
+      <!-- Right side - Broadcast button -->
+      <div class="control-section broadcast-section">
+        <button 
+          class="broadcast-button {signalActive ? 'active' : ''}" 
+          on:click={() => broadcastMessage(`ctrl_event:manual_broadcast_${Date.now()}`)}
+        >
+          <span class="broadcast-indicator"></span>
+          <span class="broadcast-msg">BROADCAST</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* Connection list styling for background with better contrast */
+  .terminal-background {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    padding: 20px;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.4;
+    color: rgba(210, 230, 210, 0.85);
+    overflow: hidden;
+    z-index: -1;
+    pointer-events: none;
+    background-color: rgba(10, 15, 20, 0.05);
+    
+    /* Create a grid for connections that wraps when needed */
+    display: flex;
+    flex-direction: column;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-content: flex-start;
+    max-height: calc(100vh - 100px);
+  }
+  
+  .terminal-header {
+    margin-bottom: 12px;
+    color: rgba(80, 200, 220, 0.9);
+    font-weight: bold;
+  }
+  
+  .terminal-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    white-space: nowrap;
+    opacity: 0.85;
+    margin-bottom: 2px;
+    min-width: 460px;
+    width: fit-content;
+    margin-right: 20px;
+    font-family: 'Courier New', monospace;
+  }
+  
+  /* Make dynamic height adjustments based on connection count */
+  :global(.terminal-background:has(.terminal-line:nth-child(n+20))) {
+    font-size: 12px;
+    line-height: 1.3;
+  }
+  
+  :global(.terminal-background:has(.terminal-line:nth-child(n+50))) {
+    font-size: 11px;
+    line-height: 1.2;
+  }
+  
+  :global(.terminal-background:has(.terminal-line:nth-child(n+100))) {
+    font-size: 10px;
+    line-height: 1.1;
+  }
+  
+  .connection-status-icon {
+    width: 15px;
+    display: inline-block;
+    font-size: 0.8em;
+  }
+  
+  .terminal-success .connection-status-icon {
+    color: rgba(80, 220, 120, 0.9);
+  }
+  
+  .terminal-error .connection-status-icon {
+    color: rgba(220, 80, 80, 0.9);
+  }
+  
+  .terminal-cmd {
+    color: rgba(220, 220, 220, 0.9);
+  }
+  
+  .waiting-message {
+    color: rgba(180, 180, 180, 0.8);
+    font-style: italic;
+    animation: pulse 2s infinite;
+  }
+  
+  .terminal-system {
+    color: rgba(100, 210, 220, 0.95);
+    font-weight: bold;
+  }
+  
+  .terminal-id {
+    color: rgba(250, 230, 120, 0.95);
+    width: 230px;
+    display: inline-block;
+    overflow: visible;
+    white-space: nowrap;
+    font-size: 0.9em;
+    font-weight: 500;
+  }
+  
+  .terminal-status {
+    color: rgba(200, 210, 200, 0.85);
+    margin-right: 15px;
+    min-width: 65px;
+    display: inline-block;
+  }
+  
+  .terminal-success .terminal-status {
+    color: rgba(120, 230, 120, 0.9);
+  }
+  
+  .terminal-error .terminal-status {
+    color: rgba(255, 150, 150, 0.9);
+  }
+  
+  /* Main UI elements */
+  .main-ui-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    padding: 16px;
+    font-family: 'Inter', 'Roboto', sans-serif;
+  }
+  
+  /* Top section styling */
+  .controller-id {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(40, 50, 60, 0.7);
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin-bottom: 16px;
+    width: fit-content;
+  }
+  
+  .id-label {
+    font-size: 0.8rem;
+    color: rgba(180, 200, 220, 0.9);
+    font-weight: 600;
+  }
+  
+  .id-value {
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    color: rgba(250, 230, 120, 0.95);
+    padding-left: 4px;
+  }
+  
+  .initializing {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: rgba(250, 180, 80, 0.95);
+    font-size: 0.9rem;
+    margin-bottom: 16px;
+    animation: pulse 1.5s infinite;
+    font-weight: bold;
+  }
+  
+  .error-message {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(80, 20, 20, 0.7);
+    color: rgba(255, 150, 150, 0.95);
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin-bottom: 16px;
+    font-weight: bold;
+  }
+  
+  
+  /* Status bar styling */
+  .status-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(40, 50, 60, 0.7);
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+  }
+  
+  .status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  
+  
+  .status-label {
+    font-size: 0.75rem;
+    color: rgba(180, 200, 220, 0.9);
+    font-weight: 600;
+  }
+  
+  .status-counters {
+    display: flex;
+    gap: 20px;
+  }
+  
+  .status-counter {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  
+  .counter-number {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: rgba(120, 210, 250, 0.95);
+  }
+  
+  /* Spacer to push content to bottom */
+  .spacer {
+    flex-grow: 1;
+  }
+  
+  /* Bottom unified control panel */
+  .bottom-controls {
+    display: flex;
+    justify-content: space-between;
+    background: rgba(30, 40, 50, 0.8);
+    border-top: 1px solid rgba(70, 100, 130, 0.4);
+    padding: 12px 18px;
+    margin-top: auto;
+    width: 100%;
+  }
+  
+  .control-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .terminal-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: rgba(200, 220, 200, 0.9);
+  }
+  
+  .counts-section {
+    display: flex;
+    flex-direction: row;
+    gap: 20px;
+    justify-content: center;
+  }
+  
+  .broadcast-section {
+    display: flex;
+    justify-content: flex-end;
+  }
+  
+  .broadcast-button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: rgba(180, 240, 200, 0.95);
+    font-weight: 600;
+    font-size: 0.9rem;
+    border: 1px solid rgba(120, 180, 160, 0.3);
+    padding: 6px 14px;
+    border-radius: 4px;
+    background-color: rgba(40, 80, 60, 0.3);
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  
+  .broadcast-button:hover {
+    background-color: rgba(50, 100, 80, 0.5);
+    border-color: rgba(120, 220, 180, 0.5);
+    box-shadow: 0 0 10px rgba(60, 220, 160, 0.2);
+  }
+  
+  .broadcast-button:active {
+    background-color: rgba(60, 120, 100, 0.6);
+    transform: scale(0.98);
+  }
+  
+  .broadcast-button.active {
+    background-color: rgba(60, 140, 100, 0.6);
+    border-color: rgba(120, 240, 180, 0.6);
+    box-shadow: 0 0 15px rgba(60, 240, 160, 0.3);
+  }
+  
+  .broadcast-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: rgba(120, 180, 160, 0.5);
+    transition: all 0.2s ease;
+  }
+  
+  .broadcast-button.active .broadcast-indicator {
+    background-color: rgba(80, 240, 160, 0.9);
+    box-shadow: 0 0 8px rgba(80, 240, 160, 0.8);
+  }
+  
+  .broadcast-msg {
+    color: inherit;
+    letter-spacing: 0.5px;
+  }
+  
+  .item-label {
+    color: rgba(150, 180, 200, 0.85);
+    font-weight: 600;
+  }
+  
+  .item-value {
+    color: rgba(180, 240, 200, 0.95);
+    font-weight: 500;
+  }
+  
+  /* Special styling for the ID display */
+  .id-item {
+    max-width: 300px;
+    overflow: hidden;
+  }
+  
+  .id-item .item-value {
+    font-size: 0.75rem;
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: rgba(250, 230, 120, 0.95);
+  }
+  
+  
+  /* Animations */
+  @keyframes pulse {
+    0% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0.5;
+    }
+  }
+  
+</style>
+
+<!-- Command line style connection list -->
+<div class="terminal-background" aria-hidden="true">
+  {#if connectionStates.size === 0}
+    <div class="terminal-header">
+      <!-- Terminal header showing system status -->
+      <span class="terminal-line">
+        <span class="terminal-system">DISTRIBUTED_SYNTH_NETWORK (v0.1) - {currentTime}</span>
+      </span>
+      <span class="terminal-line">
+        <span class="terminal-system">CTRL [{ctrlId || 'initializing...'}]</span>
+      </span>
+      <span class="terminal-line">
+        <span class="terminal-system">─────────────────────────────────────────────</span>
+      </span>
+    </div>
+    <div class="terminal-line">
+      <span class="terminal-cmd waiting-message">waiting for synth connections...</span>
+    </div>
+  {:else}
+    <div class="terminal-header">
+      <!-- Terminal header showing system status -->
+      <span class="terminal-line">
+        <span class="terminal-system">DISTRIBUTED_SYNTH_NETWORK (v0.1) - {currentTime}</span>
+      </span>
+      <span class="terminal-line">
+        <span class="terminal-system">CTRL [{ctrlId}]</span>
+      </span>
+      <span class="terminal-line">
+        <span class="terminal-system">─────────────────────────────────────────────</span>
+      </span>
+    </div>
+    
+    <!-- Connection list styled as terminal output -->
+    {#each Array.from(connectionStates.entries()) as [synthId, state] (synthId)}
+      {#if true}
+        {@const isConnected = state.connectionState === 'connected' && state.dataChannelState === 'open'}
+        <div class="terminal-line {isConnected ? 'terminal-success' : 'terminal-error'}">
+          <span class="connection-status-icon">{isConnected ? '●' : '○'}</span>
+          <span class="terminal-id">{synthId}</span>
+          <span class="terminal-status">{state.connectionState}</span>
+          <span class="terminal-status">{state.dataChannelState}</span>
+        </div>
       {/if}
-    </div>
-
-    <div class="my-4 p-4 border rounded preset-tonal-primary">
-        <h2 class="text-xl font-semibold">Manual Control</h2>
-        <p class="text-sm mt-1">Click anywhere on the page background (outside this box) to send a broadcast message to all connected clients.</p>
-    </div>
+    {/each}
+  {/if}
 </div>
