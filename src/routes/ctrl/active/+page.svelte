@@ -5,6 +5,7 @@
   import { goto } from '$app/navigation';
   import { onMount, onDestroy } from 'svelte';
   import { activeControllerId } from '$lib/stores/controllerStore';
+  import { logger, interceptConsoleLogs } from '$lib/webrtc';
 
   // --- Interfaces ---
   interface IceSvr {
@@ -80,7 +81,13 @@
   // --- WebRTC Setup ---
   const setupPeerConnection = (currentIceServers: IceSvr[], currentCtrlId: string, synthId: string) => {
     console.log(`[setupPeerConnection] Setting up for synth: ${synthId}`);
-    const pc = new RTCPeerConnection({ iceServers: currentIceServers });
+    const pc = new RTCPeerConnection({ 
+      iceServers: currentIceServers,
+      iceTransportPolicy: 'all',
+      iceCandidatePoolSize: 10,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
+    });
 
     connectionStates.set(synthId, {
       pc: pc,
@@ -103,18 +110,64 @@
     pc.oniceconnectionstatechange = e => {
       console.log(`[oniceconnectionstatechange ${synthId}] ICE state: ${pc.iceConnectionState}`);
       updateConnectionState(synthId, { iceConnectionState: pc.iceConnectionState });
-       if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-        console.error(`[oniceconnectionstatechange ${synthId}] ICE connection state failed/disconnected.`);
+      
+      if (pc.iceConnectionState === 'disconnected') {
+        console.warn(`[oniceconnectionstatechange ${synthId}] ICE connection state disconnected. Will wait for potential reconnection.`);
+        
+        // Set a timeout to check if it recovers
+        setTimeout(() => {
+          if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+            console.error(`[oniceconnectionstatechange ${synthId}] ICE connection state still disconnected/failed after wait.`);
+            // Attempt to trigger ICE reconnection
+            try {
+              pc.restartIce();
+              console.log(`[oniceconnectionstatechange ${synthId}] Attempted ICE restart.`);
+            } catch (e) {
+              console.error(`[oniceconnectionstatechange ${synthId}] Failed to restart ICE:`, e);
+            }
+          }
+        }, 5000); // Wait 5 seconds to see if it auto-recovers
+      }
+      else if (pc.iceConnectionState === 'failed') {
+        console.error(`[oniceconnectionstatechange ${synthId}] ICE connection state failed.`);
+        // Always attempt to restart ICE on failure
+        try {
+          pc.restartIce();
+          console.log(`[oniceconnectionstatechange ${synthId}] Attempted ICE restart after failure.`);
+        } catch (e) {
+          console.error(`[oniceconnectionstatechange ${synthId}] Failed to restart ICE:`, e);
+        }
       }
     };
 
+    // For debugging - track ICE candidates
+    let iceCandidateCounter = 0;
+    let iceCandidateTypes = {
+      host: 0,
+      srflx: 0,
+      relay: 0,
+      prflx: 0,
+      empty: 0
+    };
+    
     pc.onicecandidate = e => {
       if (e.candidate) {
-        console.log(`[onicecandidate ${synthId}] Sending ICE candidate.`);
+        iceCandidateCounter++;
+        // Track candidate types for debugging
+        const candidateType = e.candidate.type || 'unknown';
+        if (iceCandidateTypes[candidateType] !== undefined) {
+          iceCandidateTypes[candidateType]++;
+        }
+        
+        // Log detailed info about the candidate
+        console.log(`[onicecandidate ${synthId}] #${iceCandidateCounter} Type: ${candidateType}, Protocol: ${e.candidate.protocol}, Address: ${e.candidate.address}`);
+        
         set(ref(db, `synthOffers/${currentCtrlId}/${synthId}/ctrlIce`), e.candidate.toJSON())
           .catch(err => console.error(`[onicecandidate ${synthId}] Error sending ICE candidate:`, err));
       } else {
-        console.log(`[onicecandidate ${synthId}] All ICE candidates sent.`);
+        // This is the end-of-candidates signal
+        iceCandidateTypes.empty++;
+        console.log(`[onicecandidate ${synthId}] All ICE candidates sent. Summary: ${JSON.stringify(iceCandidateTypes)}`);
       }
     };
 
@@ -133,7 +186,23 @@
             updateConnectionState(targetSynthId, { dataChannelState: dataChannel.readyState });
             dataChannel.send(`Hello Synth ${targetSynthId} from Ctrl ${currentCtrlId}`);
         };
-        dataChannel.onmessage = e => console.log(`[onDataChannelMessage ${targetSynthId}] DC msg: ${e.data}`);
+        dataChannel.onmessage = e => {
+            const message = e.data;
+            console.log(`[onDataChannelMessage ${targetSynthId}] DC msg: ${message}`);
+            
+            // Respond to ping messages with pong to keep the connection alive
+            if (message === 'ping') {
+                try {
+                    dataChannel.send('pong');
+                    // Only log occasionally to reduce spam
+                    if (Math.random() < 0.1) {
+                        console.log(`[onDataChannelMessage ${targetSynthId}] Sent pong response`);
+                    }
+                } catch (err) {
+                    console.error(`[onDataChannelMessage ${targetSynthId}] Error sending pong:`, err);
+                }
+            }
+        };
         dataChannel.onclose = () => {
             console.log(`[onDataChannelClose ${targetSynthId}] DC closed`);
             updateConnectionState(targetSynthId, { dataChannelState: dataChannel.readyState });
@@ -217,10 +286,16 @@ const announcePresence = async (currentCtrlId: string) => {
     const iceRef = ref(db, `synthOffers/${currentCtrlId}/${synthId}/synthIce`);
     const listener = onChildAdded(iceRef, async snap => {
       const candidate = snap.val();
-      if (candidate && candidate.candidate) {
+      if (candidate) {
         try {
+          // Handle both normal candidates and "end-of-candidates" signals (which have empty candidate string)
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          console.log(`[addSynthIceListener ${synthId}] Added ICE candidate:`, candidate.sdpMid || candidate.sdpMLineIndex);
+          if (candidate.candidate) {
+            console.log(`[addSynthIceListener ${synthId}] Added ICE candidate:`, candidate.sdpMid || candidate.sdpMLineIndex);
+          } else {
+            // This is a valid end-of-candidates signal
+            console.log(`[addSynthIceListener ${synthId}] Added end-of-candidates signal`);
+          }
         } catch (e) {
           if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
              // console.warn(`[addSynthIceListener ${synthId}] Ignoring error adding ICE candidate in established state: ${e.message}`);
@@ -231,7 +306,7 @@ const announcePresence = async (currentCtrlId: string) => {
           }
         }
       } else {
-        console.warn(`[addSynthIceListener ${synthId}] Received invalid ICE candidate data:`, candidate);
+        console.warn(`[addSynthIceListener ${synthId}] Received null ICE candidate data`);
       }
     }, error => {
         console.error(`[addSynthIceListener ${synthId}] Firebase listener error on synthIce:`, error);
@@ -300,6 +375,9 @@ const announcePresence = async (currentCtrlId: string) => {
     
     // Update the store with the controller ID for the layout to use
     activeControllerId.set(ctrlId);
+    
+    // Configure logger with controller ID
+    logger.setClient('ctrl', ctrlId);
 
     await announcePresence(ctrlId);
 
@@ -363,15 +441,50 @@ const announcePresence = async (currentCtrlId: string) => {
 
   // --- Svelte Lifecycle Hooks ---
   onMount(() => {
+    // Initialize logger
+    interceptConsoleLogs();
+    logger.info('Mount', 'Controller active page initialized');
+    
+    // Create a UI element to view logs
+    const logButtonContainer = document.createElement('div');
+    logButtonContainer.style.cssText = `
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      z-index: 9999;
+    `;
+    
+    const logButton = document.createElement('button');
+    logButton.textContent = 'View Logs';
+    logButton.style.cssText = `
+      padding: 8px 16px;
+      background: rgba(60, 70, 90, 0.8);
+      color: white;
+      border: 1px solid rgba(100, 140, 180, 0.5);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    `;
+    
+    logButton.onclick = () => {
+      logger.displayLogUI();
+    };
+    
+    logButtonContainer.appendChild(logButton);
+    document.body.appendChild(logButtonContainer);
+    
     initController().then(id => {
         if (id) {
             console.log("Controller initialized successfully.");
+            logger.info('Init', `Controller initialized successfully with ID: ${id}`);
             document.body.addEventListener('click', handleBodyClick);
         } else {
             console.error("Controller initialization failed.");
+            logger.error('Init', 'Controller initialization failed');
         }
     }).catch(err => {
         console.error("Error during controller initialization:", err);
+        logger.error('Init', 'Error during controller initialization', err);
         error = "An unexpected error occurred during setup.";
     });
 

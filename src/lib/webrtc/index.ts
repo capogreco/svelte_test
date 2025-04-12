@@ -1,11 +1,11 @@
 /**
- * WebRTC Utilities Library
- * This file exports all WebRTC-related utilities
+ * WebRTC Module
+ * Central export point for all WebRTC utilities
  */
 
-// Re-export all modules
-export * from './protection';
+export * from './firebase-signaling';
 export * from './monitoring';
 export * from './navigation';
-export * from './firebase-signaling';
+export * from './protection';
 export * from './state';
+export * from './logger';

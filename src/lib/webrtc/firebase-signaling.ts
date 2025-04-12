@@ -96,10 +96,15 @@ export function listenForSynthICECandidates(
   
   const iceListener = onChildAdded(iceRef, async (snap) => {
     const candidate = snap.val();
-    if (candidate && candidate.candidate) {
+    if (candidate) {
       try {
+        // Handle both normal candidates and "end-of-candidates" signals
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        console.log(`[Firebase] Added ICE candidate for synth ${synthId}`);
+        if (candidate.candidate) {
+          console.log(`[Firebase] Added ICE candidate for synth ${synthId}`);
+        } else {
+          console.log(`[Firebase] Added end-of-candidates signal for synth ${synthId}`);
+        }
       } catch (e) {
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
           // Ignore errors for established connections

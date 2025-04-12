@@ -5,7 +5,7 @@
   import { query, limitToFirst, ref, set, get, onValue, off, push, remove } from "firebase/database";
   import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
-  import { prepareForNavigation, navigateWithProtection, createHeartbeatMechanism } from '$lib/webrtc';
+  import { prepareForNavigation, navigateWithProtection, createHeartbeatMechanism, logger, interceptConsoleLogs } from '$lib/webrtc';
   
   // Add global window properties for the WebRTC connection
   declare global {
@@ -64,6 +64,11 @@
   let reconnectAttempts = 0;
   let missedPings = 0; // Track missed pings for more resilient connection handling
   
+  // Debug timer
+  let connectionTimer = 0;
+  let connectionStartTime = 0;
+  let connectionTimerId: number | null = null;
+  
   // Store status updates in session storage
   const updateStatus = (message: string) => {
     statusMessage = message;
@@ -90,8 +95,8 @@
   
   // Constants for combined connection monitoring
   const CONNECTION_PING_INTERVAL = 3000; // Send ping every 3 seconds
-  const CONNECTION_TIMEOUT = 20000; // Consider connection dead after 20 seconds of no response
-  const CONNECTION_MISSED_PINGS_THRESHOLD = 3; // Only mark as failed after 3 consecutive missed pings
+  const CONNECTION_TIMEOUT = 30000; // Consider connection dead after 30 seconds of no response (increased from 20s)
+  const CONNECTION_MISSED_PINGS_THRESHOLD = 5; // Only mark as failed after 5 consecutive missed pings (increased from 3)
   
   // Request a wake lock to prevent phone from sleeping
   const requestWakeLock = async () => {
@@ -207,7 +212,14 @@
   // Simple message handler - no complex protocol
   const handleMessage = (message: string) => {
     // Record any valid response for connection monitoring
+    // This handles any message as a heartbeat indicator
     lastPongReceived = Date.now();
+    
+    // Reset missed pings counter when we get any valid response
+    if (missedPings > 0) {
+      console.log(`[handleMessage] Resetting missed pings counter after receiving message`);
+      missedPings = 0;
+    }
     
     // Handle different message types
     if (message === 'pong') {
@@ -566,28 +578,90 @@
     }
     updateStatus(`Connecting to controller ${ctrlId?.substring(0, 8)}...`);
 
-    const pc = new RTCPeerConnection({ iceServers });
+    const pc = new RTCPeerConnection({ 
+      iceServers,
+      iceTransportPolicy: 'all',
+      iceCandidatePoolSize: 10,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
+    });
     peerConnection = pc;
 
+    // For debugging - track ICE candidates
+    let iceCandidateCounter = 0;
+    let iceCandidateTypes = {
+      host: 0,
+      srflx: 0,
+      relay: 0,
+      prflx: 0,
+      empty: 0
+    };
+    
     pc.onicecandidate = event => {
       if (event.candidate) {
-        console.log(`[onicecandidate] Sending ICE candidate for synth ${currentSynthId}`);
+        iceCandidateCounter++;
+        // Track candidate types for debugging
+        const candidateType = event.candidate.type || 'unknown';
+        if (iceCandidateTypes[candidateType] !== undefined) {
+          iceCandidateTypes[candidateType]++;
+        }
+        
+        // Log detailed info about the candidate
+        console.log(`[onicecandidate] #${iceCandidateCounter} Type: ${candidateType}, Protocol: ${event.candidate.protocol}, Address: ${event.candidate.address}`);
+        
         const iceRef = ref(db, `synthOffers/${ctrlId}/${currentSynthId}/synthIce`);
         push(iceRef, event.candidate.toJSON())
             .catch(err => console.error(`[onicecandidate] Error sending ICE candidate:`, err));
       } else {
-         console.log(`[onicecandidate] All ICE candidates sent for synth ${currentSynthId}.`);
+        // This is the end-of-candidates signal
+        iceCandidateTypes.empty++;
+        console.log(`[onicecandidate] All ICE candidates sent for synth ${currentSynthId}. Summary: ${JSON.stringify(iceCandidateTypes)}`);
       }
     };
 
     pc.oniceconnectionstatechange = () => {
         console.log(`[oniceconnectionstatechange] ICE state: ${pc.iceConnectionState}`);
+        logger.info('ICE', `ICE connection state changed to: ${pc.iceConnectionState}`, {
+          previous: pc.iceConnectionState,
+          connectionState: pc.connectionState,
+          signalingState: pc.signalingState,
+          timestamp: new Date().toISOString(),
+          dcState: dataChannel?.readyState || 'none'
+        });
         updateStatus(`ICE State: ${pc.iceConnectionState}`);
         
-        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
-            // Failed and closed are terminal states that require reconnection
-            console.error(`[oniceconnectionstatechange] ICE connection ${pc.iceConnectionState}.`);
-            statusMessage = `Connection Failed/Closed (${pc.iceConnectionState})`;
+        if (pc.iceConnectionState === 'failed') {
+            // Failed is a state that needs intervention, try to restart ICE
+            console.error(`[oniceconnectionstatechange] ICE connection failed.`);
+            updateStatus(`ICE State: Failed - Attempting ICE restart...`);
+            
+            // Try ICE restart
+            try {
+              pc.restartIce();
+              console.log(`[oniceconnectionstatechange] Attempted ICE restart.`);
+              
+              // Set a timeout to check if restart worked
+              setTimeout(() => {
+                if (peerConnection === pc && 
+                   (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected')) {
+                  console.error(`[oniceconnectionstatechange] ICE restart didn't recover connection. Triggering reconnection.`);
+                  handleDeadConnection();
+                }
+              }, 8000); // Wait 8 seconds for ICE restart to work
+            } catch (e) {
+              console.error(`[oniceconnectionstatechange] Failed to restart ICE:`, e);
+              // If we can't restart ICE, reconnect
+              setTimeout(() => {
+                if (peerConnection === pc) {
+                  handleDeadConnection();
+                }
+              }, 1000);
+            }
+        }
+        else if (pc.iceConnectionState === 'closed') {
+            // Closed is a terminal state
+            console.error(`[oniceconnectionstatechange] ICE connection closed.`);
+            statusMessage = `Connection Closed (${pc.iceConnectionState})`;
             
             // Trigger reconnection after a brief delay
             setTimeout(() => {
@@ -604,14 +678,30 @@
             // Set a timeout to check if it recovers before triggering reconnection
             setTimeout(() => {
                 if (peerConnection === pc && pc.iceConnectionState === 'disconnected') {
-                    // Still disconnected after grace period
-                    console.warn(`[oniceconnectionstatechange] ICE still disconnected after timeout, triggering recovery`);
-                    handleDeadConnection();
+                    // Still disconnected after grace period, try ICE restart first
+                    console.warn(`[oniceconnectionstatechange] ICE still disconnected after timeout, attempting ICE restart`);
+                    
+                    try {
+                      pc.restartIce();
+                      console.log(`[oniceconnectionstatechange] Attempted ICE restart after disconnect timeout.`);
+                      
+                      // Check if restart worked after another grace period
+                      setTimeout(() => {
+                        if (peerConnection === pc && 
+                           (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
+                          console.warn(`[oniceconnectionstatechange] ICE restart didn't resolve disconnect. Triggering recovery.`);
+                          handleDeadConnection();
+                        }
+                      }, 5000); // 5 second wait after ICE restart
+                    } catch (e) {
+                      console.error(`[oniceconnectionstatechange] Failed to restart ICE after disconnect:`, e);
+                      handleDeadConnection();
+                    }
                 } else if (peerConnection === pc) {
                     console.log(`[oniceconnectionstatechange] ICE recovered to ${pc.iceConnectionState}`);
                     updateStatus(`ICE State: ${pc.iceConnectionState} (Recovered)`);
                 }
-            }, 7000); // 7-second grace period for recovery
+            }, 7000); // 7-second initial grace period for recovery
         }
         else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
             console.log(`[oniceconnectionstatechange] ICE connection established successfully`);
@@ -630,33 +720,99 @@
         
         if (pc.connectionState === 'connected') {
             updateStatus("Connected!");
+            
+            // If we previously tried to restart ICE or had connection issues, log recovery
+            if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                console.log(`[onconnectionstatechange] Connection fully recovered with ICE state: ${pc.iceConnectionState}`);
+            }
         }
-        else if (pc.connectionState === 'failed' || 
-                pc.connectionState === 'disconnected' || 
-                pc.connectionState === 'closed') {
+        else if (pc.connectionState === 'failed') {
+            console.error(`[onconnectionstatechange] Peer connection failed, attempting ICE restart first`);
             
-            console.log(`[onconnectionstatechange] Peer connection ${pc.connectionState}, initiating reconnection`);
+            // Try ICE restart before full reconnection
+            try {
+                pc.restartIce();
+                console.log(`[onconnectionstatechange] Attempted ICE restart for failed connection.`);
+                
+                // Give it some time to recover before full reconnection
+                setTimeout(() => {
+                    if (peerConnection === pc && pc.connectionState !== 'connected') {
+                        console.error(`[onconnectionstatechange] Connection still not recovered after ICE restart, initiating full reconnection`);
+                        handleDeadConnection();
+                    }
+                }, 8000);
+            } catch (e) {
+                console.error(`[onconnectionstatechange] Failed to restart ICE for failed connection:`, e);
+                
+                // Go straight to reconnection if ICE restart fails
+                setTimeout(() => {
+                    if (peerConnection === pc) {
+                        handleDeadConnection();
+                    }
+                }, 1000);
+            }
+        }
+        else if (pc.connectionState === 'disconnected') {
+            console.warn(`[onconnectionstatechange] Peer connection disconnected, waiting for potential auto-recovery`);
             
-            // Trigger reconnection after a brief delay
+            // Set a timeout to check if it recovers or needs intervention
             setTimeout(() => {
-                if (peerConnection === pc) { // Only if this is still the current peerConnection
+                if (peerConnection === pc && pc.connectionState === 'disconnected') {
+                    console.warn(`[onconnectionstatechange] Connection still disconnected after grace period, attempting ICE restart`);
+                    
+                    try {
+                        pc.restartIce();
+                        console.log(`[onconnectionstatechange] Attempted ICE restart for disconnected connection.`);
+                        
+                        // Wait a bit more to see if ICE restart helps
+                        setTimeout(() => {
+                            if (peerConnection === pc && pc.connectionState !== 'connected') {
+                                console.error(`[onconnectionstatechange] Connection still not recovered after ICE restart, initiating full reconnection`);
+                                handleDeadConnection();
+                            }
+                        }, 5000);
+                    } catch (e) {
+                        console.error(`[onconnectionstatechange] Failed to restart ICE for disconnected connection:`, e);
+                        handleDeadConnection();
+                    }
+                }
+            }, 5000); // 5-second grace period for auto-recovery
+        }
+        else if (pc.connectionState === 'closed') {
+            console.error(`[onconnectionstatechange] Peer connection closed, initiating reconnection`);
+            
+            // Closed is terminal, go straight to reconnection
+            setTimeout(() => {
+                if (peerConnection === pc) {
                     handleDeadConnection();
                 }
             }, 1000);
         }
     };
 
-    // Create data channel with more resilient configuration
+    // Create data channel with ultra-resilient configuration
     const dc = pc.createDataChannel("synthData", {
       ordered: true,          // Guarantee message order
-      maxRetransmits: 30      // Allow many retransmission attempts
-      // Note: Can't use both maxRetransmits and maxPacketLifeTime together
+      maxRetransmits: 60,     // Allow extensive retransmission attempts
+      priority: 'high'        // Make this a high priority channel
     });
     dataChannel = dc;
+    
+    // Ensure the buffered amount is reasonable
+    dc.bufferedAmountLowThreshold = 64 * 1024; // 64KB
     console.log(`[setupWebRTCAndConnect] Data channel created by synth with enhanced reliability configuration`);
     
     dc.onopen = () => {
         console.log(`[onDataChannelOpen] DC opened for synth ${currentSynthId}`);
+        logger.info('DataChannel', `Data channel opened for synth ${currentSynthId}`, {
+          readyState: dc.readyState,
+          label: dc.label,
+          protocol: dc.protocol,
+          id: dc.id,
+          ordered: dc.ordered,
+          maxRetransmits: dc.maxRetransmits
+        });
+        
         updateStatus("Data Channel Open");
         
         // Update dataChannelState and controller ID in session storage
@@ -691,15 +847,39 @@
         
         // Send a greeting message
         dc.send(`Hello Ctrl ${ctrlId?.substring(0,4)}... from Synth ${currentSynthId?.substring(0,4)}...`);
+        logger.info('DataChannel', `Sent greeting message to controller ${ctrlId}`);
         
         // Start simple connection monitoring
         startConnectionMonitoring();
         
+        // Start a timer to track how long the connection stays open
+        connectionStartTime = Date.now();
+        if (connectionTimerId) {
+          clearInterval(connectionTimerId);
+        }
+        connectionTimerId = window.setInterval(() => {
+          connectionTimer = Math.floor((Date.now() - connectionStartTime) / 1000);
+          if (connectionTimer % 10 === 0) {
+            logger.info('ConnectionTimer', `Connection has been open for ${connectionTimer} seconds`);
+          }
+        }, 1000);
+        
         // Update status
-        updateStatus("Connection established");
+        updateStatus("Connection established - Debug mode (staying on connecting page)");
         
-        // Use our new navigation utilities to handle this safely
+        // In debug mode, we'll skip navigation to stay on this page and see logs
+        console.log("⚠️ DEBUG MODE: Skipping navigation to connected page to view logs");
+        logger.info('Navigation', 'DEBUG MODE: Skipping navigation to connected page to view logs');
         
+        // Store navigation data in session storage in case we need it
+        if (browser) {
+          sessionStorage.setItem('debugMode', 'true');
+          sessionStorage.setItem('connectionSuccess', 'true');
+          sessionStorage.setItem('connectedAt', Date.now().toString());
+        }
+        
+        /* 
+        // Navigation code (commented out for debugging)
         // 1. Prepare WebRTC objects for safe navigation
         prepareForNavigation(dataChannel, peerConnection, ctrlId);
         
@@ -718,6 +898,7 @@
           retryCount: 2,
           synthetic: true // Use direct location.href for navigation
         });
+        */
     };
     dc.onmessage = e => {
         const message = e.data;
@@ -738,7 +919,28 @@
     };
     dc.onclose = () => {
         console.log(`[onDataChannelClose] DC closed for synth ${currentSynthId}`);
-        updateStatus("Data Channel Closed");
+        
+        // Stop connection timer
+        if (connectionTimerId) {
+          clearInterval(connectionTimerId);
+          connectionTimerId = null;
+        }
+        
+        // Log the final connection time
+        const finalConnectionTime = connectionStartTime > 0 ? 
+          Math.floor((Date.now() - connectionStartTime) / 1000) : 0;
+        
+        logger.error('DataChannel', `❌ Data channel closed for synth ${currentSynthId}`, {
+          readyState: dc.readyState,
+          iceState: peerConnection?.iceConnectionState,
+          connectionState: peerConnection?.connectionState,
+          signalingState: peerConnection?.signalingState,
+          timestamp: new Date().toISOString(),
+          timeOpen: finalConnectionTime > 0 ? `${finalConnectionTime} seconds` : 'unknown',
+          lastPong: lastPongReceived ? `${(Date.now() - lastPongReceived) / 1000}s ago` : 'unknown'
+        });
+        
+        updateStatus(`Data Channel Closed (was open for ${finalConnectionTime} seconds)`);
         
         // Update dataChannelState in session storage
         if (browser) {
@@ -748,6 +950,7 @@
         // Trigger reconnection after a brief delay
         setTimeout(() => {
           if (dataChannel === dc) { // Only if this is still the current dataChannel
+            logger.warn('DataChannel', 'Triggering reconnection due to data channel closure');
             handleDeadConnection();
           }
         }, 1000);
@@ -764,6 +967,14 @@
             
         if (isUserInitiatedAbort) {
             console.log(`[onDataChannelError] Normal close-related error, handling gracefully`);
+            logger.info('DataChannel', 'Normal close-related data channel error (User-Initiated Abort)', {
+              readyState: dc.readyState,
+              iceState: peerConnection?.iceConnectionState,
+              connectionState: peerConnection?.connectionState,
+              error: e.error?.message || 'Unknown error',
+              timestamp: new Date().toISOString()
+            });
+            
             // No status change needed for clean disconnects
             // The onclose handler will manage the state transition
             
@@ -785,6 +996,13 @@
         } else {
             // Only update status for real errors
             updateStatus("Data Channel Error");
+            logger.error('DataChannel', `Real data channel error for synth ${currentSynthId}`, {
+              readyState: dc.readyState,
+              iceState: peerConnection?.iceConnectionState,
+              connectionState: peerConnection?.connectionState,
+              error: e.error?.message || 'Unknown error',
+              timestamp: new Date().toISOString()
+            });
             
             // Update dataChannelState in session storage
             if (browser) {
@@ -852,17 +1070,22 @@
     console.log(`[addControllerIceListener] Listening for controller ICE at ${iceRef.toString()}`);
     const iceListener = onValue(iceRef, async (snap) => {
         const candidate = snap.val();
-        if (candidate && candidate.candidate && pc.signalingState !== 'closed') {
-             console.log(`[addControllerIceListener] Received controller ICE candidate.`);
+        if (candidate && pc.signalingState !== 'closed') {
             try {
+                // Handle both normal candidates and "end-of-candidates" signals
                 await pc.addIceCandidate(new RTCIceCandidate(candidate));
-                console.log(`[addControllerIceListener] Added controller ICE candidate.`);
+                if (candidate.candidate) {
+                    console.log(`[addControllerIceListener] Added controller ICE candidate.`);
+                } else {
+                    // This is a valid end-of-candidates signal
+                    console.log(`[addControllerIceListener] Added end-of-candidates signal.`);
+                }
             } catch (e) {
-                 if (e instanceof DOMException && e.message.includes("Error processing ICE candidate")) {
+                if (e instanceof DOMException && e.message.includes("Error processing ICE candidate")) {
                     // console.warn(`[addControllerIceListener] Ignoring known ICE processing error: ${e.message}`);
-                 } else {
+                } else {
                     console.error(`[addControllerIceListener] Error adding controller ICE candidate:`, e);
-                 }
+                }
             }
         }
     }, (err) => {
@@ -900,17 +1123,17 @@
     if (a_cxt) {
       console.log(`[startSynthesisClient] AC state: ${a_cxt.state}`);
       
-      // If audio context is suspended, we need a user gesture - redirect to root
+      // Log issue but don't redirect so we can see logs
       if (a_cxt.state === 'suspended') {
-        console.warn("[startSynthesisClient] Audio context is suspended, redirecting to root for user gesture");
-        goto('/');
-        return;
+        console.warn("[startSynthesisClient] Audio context is suspended, but continuing for debugging");
+        updateStatus("⚠️ Audio context suspended (debug mode)");
+        // Don't redirect to allow for debugging
       }
     } else {
-      // No audio context - redirect to root for initialization
-      console.warn("[startSynthesisClient] No audio context, redirecting to root");
-      goto('/');
-      return;
+      // Log issue but don't redirect
+      console.warn("[startSynthesisClient] No audio context, but continuing for debugging");
+      updateStatus("⚠️ No audio context (debug mode)");
+      // Don't redirect to allow for debugging
     }
 
     // Generate ID using Firebase Push Key
@@ -922,6 +1145,10 @@
         return;
     }
     console.log(`[startSynthesisClient] Synth ID: ${synthId}`);
+    
+    // Configure logger with synth ID
+    logger.setClient('synth', synthId);
+    logger.info('Setup', `Synthesis client initialized with ID: ${synthId}`);
     
     // Store synth ID in session storage immediately
     if (browser) {
@@ -1012,6 +1239,38 @@
     if (browser) {
       console.log('[Connecting onMount] Initializing connecting page');
       
+      // Initialize logger
+      interceptConsoleLogs();
+      logger.info('Mount', 'Synthesis connecting page initialized');
+      
+      // Create a UI element to view logs
+      const logButtonContainer = document.createElement('div');
+      logButtonContainer.style.cssText = `
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        z-index: 9999;
+      `;
+      
+      const logButton = document.createElement('button');
+      logButton.textContent = 'View Logs';
+      logButton.style.cssText = `
+        padding: 8px 16px;
+        background: rgba(60, 70, 90, 0.8);
+        color: white;
+        border: 1px solid rgba(100, 140, 180, 0.5);
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+      `;
+      
+      logButton.onclick = () => {
+        logger.displayLogUI();
+      };
+      
+      logButtonContainer.appendChild(logButton);
+      document.body.appendChild(logButtonContainer);
+      
       // Always ensure the status shows as connecting
       sessionStorage.setItem('connectionState', 'connecting');
       sessionStorage.setItem('statusMessage', 'Connecting...');
@@ -1086,7 +1345,7 @@
     </div>
   {/if}
   
-  <!-- Simple connecting message when everything is in the header -->
+  <!-- Connection UI with debug information -->
   <div class="centered-content">
     <div class="connecting-animation"></div>
     <div class="connecting-message">
@@ -1097,9 +1356,69 @@
       {/if}
     </div>
     
+    <!-- Debug information panel -->
+    <div class="debug-panel">
+      <div class="debug-title">Debug Information</div>
+      <div class="debug-item">
+        <span class="debug-label">Status:</span>
+        <span class="debug-value">{statusMessage}</span>
+      </div>
+      {#if peerConnection}
+        <div class="debug-item">
+          <span class="debug-label">ICE State:</span>
+          <span class="debug-value">{peerConnection.iceConnectionState}</span>
+        </div>
+        <div class="debug-item">
+          <span class="debug-label">Connection State:</span>
+          <span class="debug-value">{peerConnection.connectionState}</span>
+        </div>
+        <div class="debug-item">
+          <span class="debug-label">Signaling State:</span>
+          <span class="debug-value">{peerConnection.signalingState}</span>
+        </div>
+      {/if}
+      {#if dataChannel}
+        <div class="debug-item">
+          <span class="debug-label">DataChannel:</span>
+          <span class="debug-value">{dataChannel.readyState}</span>
+        </div>
+        {#if dataChannel.readyState === 'open' && connectionTimer > 0}
+          <div class="debug-item">
+            <span class="debug-label">Connection Time:</span>
+            <span class="debug-value">{connectionTimer} seconds</span>
+          </div>
+        {/if}
+      {/if}
+      <div class="debug-item">
+        <span class="debug-label">Synth ID:</span>
+        <span class="debug-value">{synthId || 'Not generated'}</span>
+      </div>
+      <div class="debug-item">
+        <span class="debug-label">Controller ID:</span>
+        <span class="debug-value">{targetCtrlId || 'Not connected'}</span>
+      </div>
+      {#if reconnecting}
+        <div class="debug-item">
+          <span class="debug-label">Reconnect Attempts:</span>
+          <span class="debug-value">{reconnectAttempts}</span>
+        </div>
+      {/if}
+      
+      <!-- Debug actions -->
+      <div class="debug-actions">
+        <button class="debug-button view-logs" on:click={() => logger.displayLogUI()}>
+          View Logs
+        </button>
+        <button class="debug-button save-logs" on:click={() => logger.saveToFile('connection-debug')}>
+          Save Logs
+        </button>
+      </div>
+    </div>
+    
     <!-- Instructions at bottom -->
     <div class="instructions">
       {wakeLockSupported ? 'Screen will stay awake while connecting.' : 'Keep app in foreground to maintain connection.'}
+      <br>Debug mode enabled - navigation disabled for logging
     </div>
   </div>
 </div>
@@ -1166,6 +1485,80 @@
     font-size: 0.85rem;
     padding: 16px 0;
     margin-top: 24px;
+  }
+  
+  /* Debug panel styling */
+  .debug-panel {
+    background: rgba(40, 50, 60, 0.7);
+    border: 1px solid rgba(70, 100, 130, 0.4);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 24px;
+    max-width: 500px;
+    width: 100%;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+  }
+  
+  .debug-title {
+    color: rgba(180, 200, 220, 0.9);
+    font-size: 1rem;
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 12px;
+    border-bottom: 1px solid rgba(70, 100, 130, 0.4);
+    padding-bottom: 8px;
+  }
+  
+  .debug-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px dotted rgba(70, 100, 130, 0.2);
+  }
+  
+  .debug-label {
+    color: rgba(150, 180, 200, 0.8);
+    font-weight: bold;
+    padding-right: 12px;
+  }
+  
+  .debug-value {
+    color: rgba(180, 240, 200, 0.95);
+    word-break: break-all;
+  }
+  
+  /* Debug actions */
+  .debug-actions {
+    display: flex;
+    justify-content: space-around;
+    margin-top: 16px;
+    border-top: 1px solid rgba(70, 100, 130, 0.4);
+    padding-top: 12px;
+  }
+  
+  .debug-button {
+    background: rgba(40, 70, 90, 0.6);
+    color: rgba(180, 220, 200, 0.9);
+    border: 1px solid rgba(70, 130, 180, 0.4);
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  
+  .debug-button:hover {
+    background: rgba(50, 90, 120, 0.7);
+    border-color: rgba(100, 180, 220, 0.5);
+  }
+  
+  .debug-button.view-logs {
+    background: rgba(40, 70, 90, 0.6);
+  }
+  
+  .debug-button.save-logs {
+    background: rgba(40, 90, 70, 0.6);
   }
   
   /* Animations */
