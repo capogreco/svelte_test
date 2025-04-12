@@ -24,8 +24,8 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # Firebase build artifacts / cache / emulator data
-.firebase/hosting.*.cache
-.firebase/emulators/
+# .firebase/hosting.*.cache
+# .firebase/emulators/
 
 # Consider adding this if the generated function code isn't needed in Git
-.firebase/distributedsynthesis/functions/chunks/private.js
+.firebase/

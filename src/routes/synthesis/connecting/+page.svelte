@@ -24,7 +24,20 @@
   // $: if (browser && !$user) goto('/synthesis'); // Removed auth check
 
   let a_cxt: AudioContext | null = null;
-  $: audioContext.subscribe (v => (a_cxt = v));
+  let unsubscribeAudioContext: () => void;
+
+  $: {
+      if (unsubscribeAudioContext) {
+          unsubscribeAudioContext();
+      }
+      unsubscribeAudioContext = audioContext.subscribe(v => {
+          a_cxt = v;
+      });
+  }
+
+  onDestroy(() => {
+    if (unsubscribeAudioContext) unsubscribeAudioContext();
+  });
 
   let statusMessage = "Initializing...";
   let synthId: string | null = null;
@@ -51,7 +64,7 @@
         });
         if (foundCtrlId) {
             console.log(`[findActiveController] Found controller: ${foundCtrlId}`);
-            statusMessage = `Found controller: ${foundCtrlId.substring(0, 8)}...`;
+            statusMessage = `Found controller: ${foundCtrlId}...`;
             return foundCtrlId;
         }
       }
@@ -75,7 +88,7 @@
     }
     targetCtrlId = ctrlId;
     console.log(`[setupWebRTCAndConnect] Setting up WebRTC for ctrlId: ${ctrlId}, synthId: ${currentSynthId}`);
-    statusMessage = `Connecting to controller ${ctrlId.substring(0, 8)}...`;
+    statusMessage = `Connecting to controller ${ctrlId?.substring(0, 8)}...`;
 
     const pc = new RTCPeerConnection({ iceServers });
     peerConnection = pc;
@@ -93,14 +106,14 @@
 
     pc.oniceconnectionstatechange = () => {
         console.log(`[oniceconnectionstatechange] ICE state: ${pc.iceConnectionState}`);
-        statusMessage = `ICE State: ${pc.iceConnectionState}`;
+        statusMessage = `ICE State: ${pc.iceConnectionState}`; // Removed optional chaining
         if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'closed') {
             console.error(`[oniceconnectionstatechange] ICE connection failed/closed.`);
             statusMessage = `Connection Failed/Closed (${pc.iceConnectionState})`;
         }
     };
-
-     pc.onconnectionstatechange = () => {
+    
+    pc.onconnectionstatechange = () => {
         console.log(`[onconnectionstatechange] Connection state: ${pc.connectionState}`);
         statusMessage = `Connection State: ${pc.connectionState}`;
          if (pc.connectionState === 'connected') {
@@ -111,11 +124,11 @@
     const dc = pc.createDataChannel("synthData");
     dataChannel = dc;
     console.log(`[setupWebRTCAndConnect] Data channel created by synth.`);
-
+    
     dc.onopen = () => {
         console.log(`[onDataChannelOpen] DC opened for synth ${currentSynthId}`);
         statusMessage = "Data Channel Open";
-        dc.send(`Hello Ctrl ${ctrlId.substring(0,4)}... from Synth ${currentSynthId.substring(0,4)}...`);
+        dc.send(`Hello Ctrl ${ctrlId?.substring(0,4)}... from Synth ${currentSynthId?.substring(0,4)}...`);
     };
     dc.onmessage = e => {
         console.log(`[onDataChannelMessage] DC msg received: ${e.data}`);
@@ -141,7 +154,7 @@
         try {
             await set(ref(db, offerPath), offer.sdp);
             console.log(`[setupWebRTCAndConnect] Offer successfully sent to Firebase at ${offerPath}`);
-            statusMessage = "Offer sent, waiting for answer...";
+            statusMessage = "~ offer sent, waiting for answer ~";
         } catch (writeError) {
             console.error(`[setupWebRTCAndConnect] FIREBASE WRITE ERROR sending offer:`, writeError);
             error = "Failed to send offer to controller.";
@@ -292,15 +305,15 @@
 <main class="flex flex-col items-center justify-center min-h-screen p-4 text-center">
     <h1 class="text-3xl font-bold underline mb-6">CONNECTING SYNTHESIS CLIENT</h1>
     {#if error}
-        <p class="text-red-500 bg-red-100 p-3 rounded mb-4">Error: {error}</p>
+        <p class="rounded mb-4 preset-tonal-error">Error: {error}</p>
     {/if}
-    <p class="text-lg text-gray-700 mb-2">Status:</p>
-    <p class="text-xl font-mono p-3 bg-gray-100 rounded shadow-sm min-w-[300px]">{statusMessage}</p>
+    <p class="text-lg mb-2">Status:</p>
+    <p class="text-xl font-mono p-3 rounded border min-w-[300px] preset-tonal-tertiary">{statusMessage}</p>
 
     {#if synthId}
-         <p class="text-sm text-gray-500 mt-4">Synth ID: <span class="font-mono">{synthId}</span></p>
+         <p class="text-sm text-gray-400 mt-4">Synth ID: <span class="font-mono">{synthId}</span></p>
     {/if}
-     {#if targetCtrlId}
-         <p class="text-sm text-gray-500 mt-1">Target Ctrl ID: <span class="font-mono">{targetCtrlId}</span></p>
+    {#if targetCtrlId}
+         <p class="text-sm text-gray-400 mt-1">Target Ctrl ID: <span class="font-mono">{targetCtrlId}</span></p>
     {/if}
 </main>

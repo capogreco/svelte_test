@@ -1,6 +1,6 @@
 <script lang="ts">
   import { user, db } from '$lib/firebase';
-  import { ref, set, get, remove, onValue, onChildAdded, off, push } from 'firebase/database'; // Added push
+  import { ref, set, get, remove, onValue, onChildAdded, off, push, onDisconnect } from 'firebase/database';
   import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
   import { onMount, onDestroy } from 'svelte';
@@ -19,7 +19,8 @@
 
   // --- Props and Reactive Statements ---
   export let data: PgData;
-  $: ({ iceServers, error } = data);
+  let error: string | Error | null = null;
+  $: ({ iceServers, error = null } = data);
   $: if (browser && !$user) goto('/ctrl');
 
   // --- State Management ---
@@ -117,15 +118,33 @@
   };
 
   // --- Firebase Signaling Logic (Synth Initiates Connection) ---
-  const announcePresence = async (currentCtrlId: string) => {
-    try {
-      await set(ref(db, `activeControllers/${currentCtrlId}`), { active: true, timestamp: Date.now() });
-      console.log(`[announcePresence] Controller ${currentCtrlId} announced.`);
-    } catch (e) {
-      console.error('[announcePresence] Error announcing presence:', e);
-      throw e;
-    }
-  };
+  // --- Firebase Signaling Logic (Synth Initiates Connection) ---
+const announcePresence = async (currentCtrlId: string) => {
+  const controllerRef = ref(db, `activeControllers/${currentCtrlId}`);
+  const synthOffersRef = ref(db, `synthOffers/${currentCtrlId}`); // Ref for the offers node
+
+  try {
+    // Set initial presence data
+    await set(controllerRef, { active: true, timestamp: Date.now() });
+    console.log(`[announcePresence] Controller ${currentCtrlId} announced.`);
+
+    // --- Register onDisconnect hooks ---
+    // Remove the controller's entry if disconnected
+    await onDisconnect(controllerRef).remove();
+    console.log(`[announcePresence] Registered onDisconnect hook to remove active controller entry.`);
+
+    // Also remove the entire node for offers directed at this controller
+    await onDisconnect(synthOffersRef).remove();
+    console.log(`[announcePresence] Registered onDisconnect hook to remove synth offers node.`);
+    // --- End of onDisconnect hooks ---
+
+  } catch (e) {
+    console.error('[announcePresence] Error announcing presence or setting onDisconnect:', e);
+    // If setting presence fails, we don't want the disconnect hooks lingering,
+    // but Firebase usually handles this. If setting onDisconnect fails, log it.
+    throw e; // Re-throw to indicate failure in init
+  }
+};
 
   const handleSynthOffer = async (synthId: string, offerData: any, currentCtrlId: string) => {
       if (!offerData || typeof offerData.sdp !== 'string') {
@@ -248,7 +267,7 @@
         }
     }, (error) => {
         console.error('[initController] Firebase error listening for synth offers:', error);
-        error = "Error connecting to signaling server.";
+        error = new Error("Error connecting to signaling server.");
     });
 
     dbListeners.push(() => off(offersRef, 'child_added', offerListener));
@@ -278,6 +297,11 @@
         console.log(`[cleanup] Removing database entries for controller ${ctrlId}`);
         const controllerRef = ref(db, `activeControllers/${ctrlId}`);
         const synthOffersRef = ref(db, `synthOffers/${ctrlId}`);
+
+        // Cancel the disconnect hooks first
+        onDisconnect(controllerRef).cancel(); 
+        onDisconnect(synthOffersRef).cancel();
+
         remove(controllerRef).catch(e => console.error("[cleanup] Error removing active controller entry:", e));
         remove(synthOffersRef).catch(e => console.error("[cleanup] Error removing synth offers node:", e));
     } else {
@@ -316,28 +340,49 @@
 <div class="container mx-auto p-4">
     <h1 class="text-3xl font-bold underline mb-4">ACTIVE Controller</h1>
     {#if ctrlId}
-        <p class="text-sm text-gray-600 mb-4">Controller ID: <span class="font-mono">{ctrlId}</span></p>
+        <p class="text-sm text-gray-400 mb-4">Controller ID: 
+          <span class="font-mono">{ctrlId}</span>
+        </p>
     {:else if !error}
-        <p class="text-yellow-600">Initializing controller...</p>
+        <p class="preset-outline-warning">Initializing controller...</p>
     {/if}
 
     {#if error}
-      <p class="text-red-500 bg-red-100 p-3 rounded mb-4">Error: {error}</p>
+      <p class="p-3 rounded mb-4 preset-tonal-error">Error: {error}</p>
     {/if}
 
     <div class="my-4">
-      <h2 class="text-xl font-semibold">Connection Status ({connectionStates.size} clients)</h2>
+      <h2 class="text-xl font-semibold">
+        Connection Status ({connectionStates.size} clients)
+      </h2>
       {#if connectionStates.size === 0}
-        <p class="text-gray-500 mt-2">Waiting for synthesis clients to connect...</p>
+        <p class="preset-tonal-warning mt-2">
+          ... waiting for synthesis clients to connect.
+        </p>
       {:else}
         <ul class="list-none mt-2 space-y-2">
            {#each Array.from(connectionStates.entries()) as [synthId, state] (synthId)}
-            <li class="p-3 border rounded shadow-sm {state.connectionState === 'connected' && state.dataChannelState === 'open' ? 'border-green-400 bg-green-50' : 'border-gray-300 bg-white'}">
-              <strong class="block mb-1">Synth ID:</strong> <span class="font-mono text-xs break-all">{synthId}</span> <br/>
+            <li class="p-3 border rounded shadow-sm {
+              state.connectionState === 'connected' && state.dataChannelState === 'open' 
+              ? 'preset-tonal-success' 
+              : 'preset-tonal-error'
+            }">
+              <strong class="block mb-1">Synth ID:</strong> 
+              <span class="font-mono text-xs break-all">{synthId}</span> 
+              <br/>
               <div class="grid grid-cols-3 gap-2 mt-1 text-sm">
-                  <span><strong>Conn:</strong> <span class="font-mono">{state.connectionState}</span></span>
-                  <span><strong>ICE:</strong> <span class="font-mono">{state.iceConnectionState}</span></span>
-                  <span><strong>Data:</strong> <span class="font-mono">{state.dataChannelState}</span></span>
+                  <span>
+                    <strong>Conn:</strong> 
+                    <span class="font-mono">{state.connectionState}</span>
+                  </span>
+                  <span>
+                    <strong>ICE:</strong> 
+                    <span class="font-mono">{state.iceConnectionState}</span>
+                  </span>
+                  <span>
+                    <strong>Data:</strong>
+                    <span class="font-mono">{state.dataChannelState}</span>
+                  </span>
               </div>
             </li>
           {/each}
@@ -345,8 +390,8 @@
       {/if}
     </div>
 
-    <div class="my-4 p-4 border rounded bg-gray-50 shadow-sm">
+    <div class="my-4 p-4 border rounded preset-tonal-primary">
         <h2 class="text-xl font-semibold">Manual Control</h2>
-        <p class="text-sm text-gray-700 mt-1">Click anywhere on the page background (outside this box) to send a broadcast message to all connected clients.</p>
+        <p class="text-sm mt-1">Click anywhere on the page background (outside this box) to send a broadcast message to all connected clients.</p>
     </div>
 </div>
