@@ -5,6 +5,7 @@
   import { query, limitToFirst, ref, set, get, onValue, off, push, remove } from "firebase/database";
   import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
+  import { prepareForNavigation, navigateWithProtection, createHeartbeatMechanism } from '$lib/webrtc';
   
   // Add global window properties for the WebRTC connection
   declare global {
@@ -698,7 +699,6 @@
         updateStatus("Connection established");
         
         // Use our new navigation utilities to handle this safely
-        import { prepareForNavigation, navigateWithProtection, createHeartbeatMechanism } from '$lib/webrtc';
         
         // 1. Prepare WebRTC objects for safe navigation
         prepareForNavigation(dataChannel, peerConnection, ctrlId);

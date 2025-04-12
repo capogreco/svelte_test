@@ -3,6 +3,7 @@
   import { browser } from '$app/environment';
   import { audioContext } from '$lib/stores/audioContext';
   import { goto } from '$app/navigation';
+  import { recoverConnectionAfterNavigation, protectDataChannel, protectPeerConnection, createHeartbeatMechanism } from '$lib/webrtc';
   
   // Add global window properties for the WebRTC connection
   declare global {
@@ -637,7 +638,6 @@
       }
       
       // Use our WebRTC utilities for clean recovery
-      import { recoverConnectionAfterNavigation, protectDataChannel, protectPeerConnection, createHeartbeatMechanism } from '$lib/webrtc';
       
       // Get navigation attempts from session storage
       const navigationAttempts = parseInt(sessionStorage.getItem('navigationAttempts') || '0');
